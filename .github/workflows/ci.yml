@@ -17,7 +17,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: pnpm
       - name: Enable pinned pnpm
         run: corepack enable && corepack prepare pnpm@11.25.0 --activate
       - run: pnpm install --frozen-lockfile
@@ -38,7 +37,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: pnpm
       - run: corepack enable && corepack prepare pnpm@11.25.0 --activate
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @scheduler/web build
