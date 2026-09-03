@@ -1,87 +1,96 @@
 # Deployment
 
-This path deploys an independent instance. It does not create a shared Postline service.
+This path deploys an independent Postline instance. It does not create a shared service.
 
 ## Prerequisites
 
 - Node.js 24 and pnpm 11.25 through Corepack
-- Supabase CLI authenticated to the intended project
+- An UploadThing application on the free 2 GB plan
+- Supabase CLI linked to the intended project
 - Wrangler authenticated to the intended Cloudflare account
-- A stable HTTPS web URL and Worker/API URL
+- Stable HTTPS web and Worker/API URLs
 - Completed steps in [HUMAN_SETUP.md](HUMAN_SETUP.md)
 
 ## Validate source
 
 ```bash
 corepack enable
-pnpm install --frozen-lockfile
-pnpm check
-pnpm test:e2e
-pnpm audit --audit-level high
+corepack pnpm install --frozen-lockfile
+corepack pnpm check
+corepack pnpm test:e2e
+corepack pnpm audit --audit-level high
 ```
 
 ## Database
 
-Link only the intended project, inspect the target, then apply ordered migrations:
+Inspect the linked target, then apply ordered migrations:
 
 ```bash
-supabase login
-supabase link --project-ref YOUR_PROJECT_REF
-supabase db push --dry-run
-supabase db push
+corepack pnpm supabase projects list
+corepack pnpm supabase migration list
+corepack pnpm supabase db push --dry-run
+corepack pnpm supabase db push
+corepack pnpm supabase migration list
 ```
 
-Create the owner user and installation row as described in [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md). Do not use the service-role key in the browser.
+Create the owner user and installation row as described in [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md). Never use the service-role key in the browser. Migration `202609030003_uploadthing_storage.sql` adds UploadThing metadata plus atomic reservation, completion, and usage RPCs. It preserves legacy storage rows for forward compatibility; the current application does not fetch or delete those legacy objects.
 
-## Worker resources and secrets
+## UploadThing
 
-From `apps/worker`, create the named resources once:
+Complete [docs/UPLOADTHING_SETUP.md](docs/UPLOADTHING_SETUP.md). Enter the v7 token directly into Wrangler's hidden prompt:
 
 ```bash
-pnpm exec wrangler whoami
-pnpm exec wrangler r2 bucket create social-scheduler-media
-pnpm exec wrangler queues create social-scheduler-publish
-pnpm exec wrangler queues create social-scheduler-dead-letter
-pnpm exec wrangler r2 bucket cors set social-scheduler-media --file r2-cors.json
+corepack pnpm --dir apps/worker exec wrangler secret put UPLOADTHING_TOKEN
 ```
 
-Add every sensitive value from `.env.example` with `wrangler secret put NAME`. Non-secret production variables can be placed in an environment-specific Wrangler section. Keep review flags false until dashboard confirmation.
+Never place this token in a `VITE_` variable, command argument, chat, screenshot, commit, issue, or build log. Set `WORKER_PUBLIC_URL` to the final Worker HTTPS origin so UploadThing can reach `/api/uploadthing` callbacks.
 
-Route the exact HTTPS hostname configured as `R2_PUBLIC_DELIVERY_HOST` to this Worker (custom domain or route). Keep R2 private. TikTok must verify this exact hostname or `/delivery/` URL prefix before pull-based photo publishing.
+## Cloudflare Worker resources and secrets
+
+Inspect resources before creating anything. R2 is neither needed nor authorized:
+
+```bash
+corepack pnpm --dir apps/worker exec wrangler whoami
+corepack pnpm --dir apps/worker exec wrangler queues list
+corepack pnpm --dir apps/worker exec wrangler queues create social-scheduler-publish
+corepack pnpm --dir apps/worker exec wrangler queues create social-scheduler-dead-letter
+```
+
+Run the two create commands only when their exact queues are absent and Cloudflare confirms Queues Free. Add other sensitive values from `.env.example` through `wrangler secret put NAME`; keep review flags false until their provider dashboards confirm approval. Configure `WORKER_PUBLIC_URL` and `APP_URL` as exact production origins.
 
 Build without publishing and inspect bindings:
 
 ```bash
-pnpm build
-pnpm exec wrangler deploy --dry-run
+corepack pnpm build
+corepack pnpm --dir apps/worker exec wrangler deploy --dry-run
 ```
 
-Deploy the Worker:
+Deploy only when every real required secret is present:
 
 ```bash
-pnpm exec wrangler deploy
+corepack pnpm --dir apps/worker exec wrangler deploy
 ```
 
-Wrangler applies the `* * * * *` UTC Cron Trigger and queue bindings from `wrangler.toml`. In Cloudflare, verify Worker → Settings → Triggers → Cron Triggers and Settings → Bindings. Verify the consumer has zero automatic retries; the application itself records and acknowledges platform failures.
+Wrangler applies the UTC cron and queue bindings in `wrangler.toml`. Verify the cron and that the consumer has `max_retries = 0`; platform failures are durable application results and must not automatically create a duplicate publish attempt.
 
 ## Web application
 
-Set these build-time values in the web hosting project:
+Set only these public build-time values in the web hosting project:
 
 - `VITE_APP_URL=https://YOUR_WEB_HOST`
 - `VITE_API_URL=https://YOUR_WORKER_HOST`
 - `VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co`
-- `VITE_SUPABASE_ANON_KEY=…` (public anon key only)
+- `VITE_SUPABASE_ANON_KEY=...` (public anon key only)
 - `VITE_DEMO_MODE=false`
 
 Build and deploy to a static host. Example with Cloudflare Pages:
 
 ```bash
-pnpm --filter @scheduler/web build
-pnpm exec wrangler pages deploy apps/web/dist --project-name postline
+corepack pnpm --filter @scheduler/web build
+corepack pnpm exec wrangler pages deploy apps/web/dist --project-name postline
 ```
 
-Configure SPA fallback to `index.html`, HTTPS, and the final custom domain. Update Supabase URL Configuration and all provider callback URIs if the canonical URL changes.
+Configure SPA fallback, HTTPS, and the final custom domain. Update Supabase URL configuration and provider callback URIs if the canonical URL changes.
 
 ## Verification
 
@@ -89,18 +98,18 @@ Configure SPA fallback to `index.html`, HTTPS, and the final custom domain. Upda
 curl -fsS https://YOUR_WORKER_HOST/health
 ```
 
-Expected production state is `status: ok`, `configured: true`. Approval flags may still be false and will visibly block that platform. Test owner magic link; verify a different email receives a 403; upload a harmless media file; schedule without enabling live publication; inspect UTC storage and audit log.
+Expected production state is `status: ok` and `configured: true`. Test owner magic link, verify another email receives 403, upload harmless media, confirm the media is selectable only after callback completion, and inspect quota/audit records. UploadThing Free files are public-readable through opaque URLs; a signed Postline delivery URL does not make the underlying file private.
 
-Do not enable `LIVE_TEST_CONFIRM` merely to make `/health` green. It is a separate intentional safety switch.
+Do not enable `LIVE_TEST_CONFIRM` merely to make `/health` green. No social publication is authorized until provider approval and an intentional controlled test.
 
 ## Safe migrations and rollback
 
 1. Back up the Supabase database.
-2. Review migration SQL and `supabase db push --dry-run`.
+2. Review SQL and run the remote dry run against the exact linked project.
 3. Deploy additive database changes before code that consumes them.
 4. Deploy the Worker, then web UI.
-5. For rollback, deploy the previous Worker/web commit. Avoid destructive down migrations. Correct database data/schema with a reviewed forward migration.
+5. Roll back application code by deploying a prior build; repair database schema/data only with a reviewed forward migration.
 
 ## CI deployment
 
-`.github/workflows/deploy.yml` is manual (`workflow_dispatch`) and requires protected environment secrets. GitHub Actions is never used for post scheduling.
+`.github/workflows/deploy.yml` is manual (`workflow_dispatch`) and requires protected environment secrets. GitHub Actions is never the production scheduler.

@@ -11,10 +11,10 @@ Contributions are welcome under the MIT Licence.
 5. Run:
 
 ```bash
-pnpm format
-pnpm check
-pnpm test:e2e
-pnpm audit --audit-level high
+corepack pnpm format
+corepack pnpm check
+corepack pnpm test:e2e
+corepack pnpm audit --audit-level high
 ```
 
 ## Platform changes
@@ -25,7 +25,7 @@ Adapters accept an injected fetch function for mocked HTTP testing. Default CI m
 
 ## Database changes
 
-Add a new timestamped forward migration. Preserve owner columns, RLS, auditability, independent target states and atomic claims. Run `pnpm db:validate`. Avoid destructive migration rollback instructions.
+Add a new timestamped forward migration. Preserve owner columns, RLS, auditability, independent target states and atomic claims. Run `corepack pnpm db:validate`. Avoid destructive migration rollback instructions.
 
 ## Pull requests
 

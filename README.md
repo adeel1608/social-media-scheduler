@@ -2,7 +2,7 @@
 
 Postline is an open-source, self-hosted scheduler for one owner to prepare, schedule, publish, and measure content across Instagram, TikTok, and YouTube. A single post can create independent platform targets, so (for example) an Instagram success never hides a TikTok failure.
 
-It is not a centrally hosted SaaS. Each person clones and deploys a separate private instance with their own Supabase, Cloudflare, Resend, Meta, TikTok, and Google credentials.
+It is not a centrally hosted SaaS. Each person clones and deploys a separate private instance with their own Supabase, Cloudflare, UploadThing, Resend, Meta, TikTok, and Google credentials.
 
 > Status: the application, official-API adapters, migrations, security controls, tests, and deployment configuration are implemented and mock-tested. No platform connection or real publication was live-tested in this repository. Public posting remains deliberately blocked until the relevant provider approvals and `LIVE_TEST_CONFIRM=true` are configured.
 
@@ -13,7 +13,7 @@ It is not a centrally hosted SaaS. Each person clones and deploys a separate pri
 ## What it includes
 
 - Supabase email magic-link authentication with one-owner authorization in the browser, Worker, and Row Level Security policies.
-- Private R2 media, direct uploads, resumable multipart uploads, browser progress, randomized object keys, short-lived delivery URLs, and abandoned-upload cleanup.
+- Owner-authorized direct browser uploads to UploadThing, browser progress, a concurrency-safe 1.8 GiB active-media cap, signed delivery URLs, and abandoned-reservation cleanup.
 - One-minute Cloudflare Cron claims with row locks, leases, stable idempotency keys, and Cloudflare Queue dispatch.
 - Real official-API adapters for Meta Instagram Platform, TikTok Content Posting API, YouTube Data API v3, and YouTube Analytics API.
 - No automatic retry after an API publish failure. An ambiguous result becomes `needs_review`; a definite failure requires an explicit manual retry.
@@ -37,20 +37,20 @@ It is not a centrally hosted SaaS. Each person clones and deploys a separate pri
 ```mermaid
 flowchart LR
   B[React + Vite desktop UI] -->|magic-link session| A[Cloudflare Worker API]
-  B -->|signed direct upload| R[(Private Cloudflare R2)]
+  B -->|authorized direct upload| U[(UploadThing Free)]
   A -->|RLS + server operations| S[(Supabase Postgres/Auth)]
   C[UTC cron every minute] --> A
   A -->|safe target IDs only| Q[Cloudflare Queue]
   Q --> W[Queue consumer]
   W -->|decrypt server-side| S
-  W -->|stream chunks| R
+  W -->|validated range streams| U
   W --> I[Instagram official API]
   W --> T[TikTok official API]
   W --> Y[YouTube official APIs]
   W --> E[Resend failure-only email]
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) and [ADR 0001](docs/adr/0001-free-tier-first-stack.md).
+See [ARCHITECTURE.md](ARCHITECTURE.md), [ADR 0001](docs/adr/0001-free-tier-first-stack.md), and [ADR 0002](docs/adr/0002-uploadthing-media-storage.md).
 
 ## Quick local start
 
@@ -58,10 +58,10 @@ Requirements: Node.js 24+, Corepack, and pnpm 11.25. A full backend run also nee
 
 ```bash
 corepack enable
-pnpm install
+corepack pnpm install
 cp .env.example .env
-pnpm setup-doctor
-pnpm dev
+corepack pnpm setup-doctor
+corepack pnpm dev
 ```
 
 `.env.example` enables an explicitly labelled local UI demonstration. It cannot contact real platform APIs or report fake publications. Set `VITE_DEMO_MODE=false` and configure Supabase and the Worker for an authenticated integration environment.
@@ -70,7 +70,7 @@ Run the Worker separately:
 
 ```bash
 cp .env.example apps/worker/.dev.vars
-pnpm dev:worker
+corepack pnpm dev:worker
 ```
 
 Do not put real secrets in `.env.example`, browser variables, source control, issue comments, build logs, or chat.
@@ -80,19 +80,22 @@ Do not put real secrets in `.env.example`, browser variables, source control, is
 1. Fork or clone this repository.
 2. Follow [HUMAN_SETUP.md](HUMAN_SETUP.md) in order.
 3. Create Supabase, run the ordered migrations, create only the owner auth user, and seed `installation_settings`.
-4. Create the Cloudflare R2 bucket, queue, dead-letter queue, Worker, cron, and secrets.
-5. Verify a Resend sender.
-6. Register each platform app, add the exact callback URI, request only the documented scopes, and complete required reviews/audits.
-7. Run `pnpm setup-doctor`, all checks, deploy the UI and Worker, then verify `/health`.
-8. After the owner explicitly approves a controlled real test, set `LIVE_TEST_CONFIRM=true` and test one private/non-public item first where provider policy permits. Never claim public readiness until the audit permits it.
+4. Create an UploadThing application on its free 2 GB plan and store its token only as a Worker secret.
+5. Create the Cloudflare queue, dead-letter queue, Worker, cron, and remaining secrets. R2 is not used.
+6. Verify a Resend sender.
+7. Register each platform app, add the exact callback URI, request only the documented scopes, and complete required reviews/audits.
+8. Run `corepack pnpm setup-doctor`, all checks, deploy the UI and Worker, then verify `/health`.
+9. After the owner explicitly approves a controlled real test, set `LIVE_TEST_CONFIRM=true` and test one private/non-public item first where provider policy permits. Never claim public readiness until the audit permits it.
 
 The complete path and rollback notes are in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Limits and cost
 
-Postline does not impose a “10 scheduled posts” or other application-level cap. PostgreSQL records use cursor pagination and the interface uses virtualization. Unlimited means no artificial product limit—not infinite resources. Supabase database/storage/egress quotas, Cloudflare Worker/Queue/R2 limits, Resend email limits, provider media restrictions, API quotas, rate limits, daily posting caps, and developer-policy requirements still apply. Free plans and provider limits change; check the current provider dashboards before relying on them.
+Postline does not impose a “10 scheduled posts” or other application-level queue cap. PostgreSQL records use cursor pagination and the interface uses virtualization. Unlimited means no artificial queue limit—not infinite resources. UploadThing Free provides finite 2 GB storage, and Postline rejects reservations above 1.8 GiB of active/outstanding media to leave operational headroom. Supabase, Cloudflare Worker/Queue, UploadThing, Resend, and social-provider quotas and policies still apply. Free plans and provider limits change; check the current provider dashboards before relying on them.
 
-Source media is eligible for deletion seven days after every target succeeds. Any failed or ambiguous target retains media until the owner resolves or deletes it, and the UI calls out that storage risk.
+UploadThing Free files are public-readable to anyone who knows their opaque, hard-to-guess URL. Postline normally gives social providers a separate short-lived signed Worker URL, but that does not make the underlying UploadThing file private. Do not upload media that cannot safely have this exposure.
+
+Source media is eligible for deletion seven days after every target succeeds. Any failed or ambiguous target retains media until the owner safely resolves/retries it and every selected target is published; the UI calls out that storage risk.
 
 ## Honest verification status
 
@@ -102,7 +105,8 @@ Source media is eligible for deletion seven days after every target succeeds. An
 | TikTok OAuth/video/photo/status/analytics                 | Yes         | Yes                       | No                    |
 | YouTube OAuth/resumable upload/status/thumbnail/analytics | Yes         | Yes                       | No                    |
 | Supabase Auth/Postgres/RLS                                | Yes         | Migration/static tests    | No remote project     |
-| Cloudflare Worker/Cron/Queue/R2                           | Yes         | Dry-run build/local logic | No deployment         |
+| Cloudflare Worker/Cron/Queue                              | Yes         | Dry-run build/local logic | No deployment         |
+| UploadThing direct upload/storage/deletion                | Yes         | SDK integration mocks     | No provider token     |
 | Resend failure email                                      | Yes         | Deduplication/logic tests | No sender credentials |
 
 Mocks are injected only in tests. Production configuration fails closed and never activates mock publishing.
@@ -110,15 +114,15 @@ Mocks are injected only in tests. Production configuration fails closed and neve
 ## Development
 
 ```bash
-pnpm format:check
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm db:validate
-pnpm test:e2e
-pnpm audit
-pnpm secrets:scan
+corepack pnpm format:check
+corepack pnpm lint
+corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm build
+corepack pnpm db:validate
+corepack pnpm test:e2e
+corepack pnpm audit --audit-level high
+corepack pnpm secrets:scan
 ```
 
 Live integration tests are intentionally absent from the default test command and must never be triggered by CI. See [CONTRIBUTING.md](CONTRIBUTING.md).

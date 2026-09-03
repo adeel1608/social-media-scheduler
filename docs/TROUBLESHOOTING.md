@@ -26,7 +26,11 @@ Complete the API project upload audit referenced by `videos.insert`, then set th
 
 ## Provider could not fetch media
 
-Confirm the short-lived HTTPS URL is still valid, has no redirect, and does not expose bucket listing. TikTok PULL_FROM_URL/photo also requires domain or URL-prefix ownership. Meta must reach the URL while creating its container. Check R2 CORS for browser upload separately; provider GET is server-to-server.
+Confirm the short-lived signed Worker HTTPS URL is still valid and redirect-free. TikTok PULL_FROM_URL/photo also requires domain or URL-prefix ownership. Meta must reach the URL while creating its container. The Worker validates the app-specific UploadThing hostname and streams the response; it does not accept a destination URL from the caller.
+
+## Upload initiation or callback failed
+
+Confirm `WORKER_PUBLIC_URL` is the exact deployed HTTPS Worker origin and `UPLOADTHING_TOKEN` is a valid v7 token stored as a Worker secret. The browser must send the current Supabase owner JWT. Do not protect the callback with generic owner middleware: the public provider callback is authenticated by UploadThing's SDK signature verification. A failed callback leaves a bounded reservation so another concurrent upload cannot bypass quota.
 
 ## Chunk upload reports a range error
 
@@ -42,7 +46,7 @@ Inspect `email_events.deduplication_key`, its unique constraint and the attempt 
 
 ## Storage keeps growing
 
-Failed/review items retain media by design. Resolve or delete them. Confirm successful targets have `published_at`, every sibling target is published, the seven-day retention has passed and cron is running. Do not add an unconditional bucket lifecycle delete that could remove failed media.
+Failed, ambiguous, incomplete, and pending items retain media by design. Resolve them before deletion. Confirm successful targets have `published_at`, every selected target is published, the seven-day retention has passed, and cron is running. The storage panel separates active provider bytes from reservations. An expired reservation remains counted until UploadThing deletion/absence is confirmed; repeated failures record a deletion error for later safe retry.
 
 ## Cron or queue does not run
 
@@ -50,7 +54,7 @@ Cloudflare Cron is UTC. Confirm `* * * * *` under Worker → Settings → Trigge
 
 ## Database migration failure
 
-Run `pnpm db:validate`, inspect `supabase db push --dry-run`, and confirm migrations are applied in filename order. Use a new forward migration to repair deployed schema; do not edit history after deployment.
+Run `corepack pnpm db:validate`, inspect `corepack pnpm supabase db push --dry-run`, and confirm migrations are applied in filename order. Use a new forward migration to repair deployed schema; do not edit history after deployment.
 
 ## No analytics value
 

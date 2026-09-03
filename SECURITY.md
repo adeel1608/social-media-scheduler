@@ -7,7 +7,7 @@ Each deployment has one owner. Supabase authenticates with a one-time magic link
 ## Secrets and tokens
 
 - Browser code receives only the Supabase anon key and public service URLs.
-- Service role, OAuth client secrets, R2 keys, Resend key, and encryption key are Worker secrets.
+- Service role, `UPLOADTHING_TOKEN`, OAuth client secrets, Resend key, and encryption/signing keys are Worker secrets.
 - Access/refresh tokens use Web Crypto AES-256-GCM with a unique 96-bit nonce. Ciphertext, nonce and key version use separate fields.
 - OAuth state is random, hashed at rest, expires after ten minutes and is consumed once. PKCE S256 is used where supported; its verifier is encrypted at rest.
 - Provider upload-session URLs are encrypted. Attempts/logs/email pass through structural redaction and never include tokens or signed media URLs.
@@ -17,11 +17,11 @@ Generate a 32-byte base64 encryption key locally. To rotate, deploy code able to
 ## API controls
 
 - Zod validates incoming posts, pagination and platform metadata.
-- Every `/api/*` endpoint except provider OAuth callbacks requires owner middleware. Callbacks rely on short-lived one-use state tied to the owner.
+- Every `/api/*` endpoint except provider OAuth callbacks and the UploadThing file-route endpoint requires generic owner middleware. Upload initiation authenticates the owner inside UploadThing route middleware; UploadThing callbacks are public so the provider can reach them, but the official SDK verifies their HMAC signature before completion logic runs.
 - State-changing database RPCs enforce owner identity/RLS again.
 - Sensitive route rate limiting is backed by `rate_limit_buckets`; deployments should also add Cloudflare WAF/rate-limit rules to OAuth and upload endpoints.
 - Security headers deny framing, MIME sniffing, sensitive browser capabilities and unexpected origins. Set CSP connect sources to actual production hosts.
-- R2 keys are random and private. Upload and delivery URLs are short-lived; configure bucket CORS only for the exact web origin.
+- UploadThing provider URLs are validated against the app-specific official hostname (plus the documented legacy host) and exact provider file key before storage or fetch. Redirects, credentials, unexpected ports, arbitrary hosts and malformed ranges are rejected. Signed delivery URLs resolve a media UUID server-side and cannot proxy arbitrary destinations.
 
 ## Publishing safety
 
@@ -33,7 +33,7 @@ Generate a 32-byte base64 encryption key locally. To rotate, deploy code able to
 
 ## Data handling
 
-Source media is private. When all targets succeed, it is retained seven days and then deleted only after the cleanup job rechecks database state. Failed/ambiguous media is kept until owner action. Metadata, remote URLs, audit records and analytics remain until deletion.
+UploadThing Free source files are public-readable through opaque, hard-to-guess URLs; signed Postline delivery URLs do not make those underlying files private. When all selected targets succeed, media is retained seven days and deleted only after cleanup rechecks database state. Failed, ambiguous, incomplete and pending media is kept until it is safe for owner action. Deletion changes quota accounting only after UploadThing confirms deletion or absence. Metadata, audit records and analytics remain until deletion.
 
 Disconnect requests provider revocation where supported before encrypted credentials are destroyed. Installation deletion does not delete already-published provider content; this is stated in the public deletion template.
 

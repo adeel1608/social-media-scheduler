@@ -25,7 +25,7 @@ Verified 2026-09-03 against the official Instagram Platform overview, Instagram 
 
 ## Publishing workflow implemented
 
-Postline creates child containers, a carousel parent where needed, polls asynchronous processing and calls `/{ig-user-id}/media_publish`. R2 supplies short-lived fetchable HTTPS media. Feed-image alt text is sent only where the official guide supports it; it is not claimed for Reels/Stories.
+Postline creates child containers, a carousel parent where needed, polls asynchronous processing and calls `/{ig-user-id}/media_publish`. Its signed Worker endpoint supplies short-lived HTTPS media backed by a validated UploadThing file. Feed-image alt text is sent only where the official guide supports it; it is not claimed for Reels/Stories.
 
 ## Analytics
 
