@@ -1,0 +1,24 @@
+{
+  "name": "@scheduler/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --var ENVIRONMENT:development",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run test"
+  },
+  "dependencies": {
+    "@scheduler/platforms": "workspace:*",
+    "@scheduler/shared": "workspace:*",
+    "aws4fetch": "1.0.20",
+    "hono": "4.13.5",
+    "luxon": "3.7.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260903.1",
+    "@types/luxon": "3.7.1",
+    "wrangler": "4.128.0"
+  }
+}
