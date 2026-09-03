@@ -1,0 +1,29 @@
+{
+  "name": "@scheduler/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "build:e2e": "tsc -b && vite build --mode e2e",
+    "typecheck": "tsc -b --pretty false",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@scheduler/shared": "workspace:*",
+    "@supabase/supabase-js": "2.114.0",
+    "lucide-react": "1.39.0",
+    "luxon": "3.7.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-router-dom": "7.18.3"
+  },
+  "devDependencies": {
+    "@types/luxon": "3.7.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "6.1.1",
+    "vite": "8.2.2"
+  }
+}
