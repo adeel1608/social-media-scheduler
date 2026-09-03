@@ -35,6 +35,29 @@ export interface Database {
           updated_at: string;
         };
       };
+      media_assets: {
+        Row: {
+          id: string;
+          owner_id: string;
+          object_key: string;
+          storage_provider: "r2" | "uploadthing";
+          provider_file_key: string | null;
+          provider_url: string | null;
+          original_filename: string;
+          mime_type: string;
+          size_bytes: number;
+          upload_status:
+            "pending" | "uploading" | "complete" | "aborted" | "deleted";
+          reservation_expires_at: string | null;
+          deletion_status: "not_requested" | "pending" | "confirmed" | "failed";
+          deletion_attempted_at: string | null;
+          provider_deleted_at: string | null;
+          deletion_last_error: string | null;
+          deleted_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+      };
       posts: {
         Row: {
           id: string;

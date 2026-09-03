@@ -10,7 +10,7 @@ import { adapterFor } from "./adapters";
 import { SupabaseRest } from "./database";
 import type { Env, QueueJob } from "./env";
 import { sendFailureEmailOnce } from "./notifications";
-import { signedDeliveryUrl } from "./storage";
+import { fetchMediaBody, fetchMediaRange, signedDeliveryUrl } from "./storage";
 
 interface TargetRecord {
   id: string;
@@ -33,8 +33,13 @@ interface TargetRecord {
       media_assets: {
         id: string;
         object_key: string;
+        storage_provider: string;
+        provider_file_key: string | null;
+        provider_url: string | null;
         mime_type: string;
         size_bytes: number;
+        upload_status: string;
+        deleted_at: string | null;
         width?: number;
         height?: number;
         duration_seconds?: number;
@@ -355,6 +360,9 @@ async function processClaimedQueueJob(
     const media = mediaRows.map(({ media_assets: item }) => ({
       id: item.id,
       objectKey: item.object_key,
+      storageProvider: item.storage_provider,
+      providerFileKey: item.provider_file_key,
+      providerUrl: item.provider_url,
       mimeType: item.mime_type,
       sizeBytes: item.size_bytes,
       ...(item.width ? { width: item.width } : {}),
@@ -377,7 +385,12 @@ async function processClaimedQueueJob(
       return;
     }
     const deliveryUrls = await Promise.all(
-      media.map((item) => signedDeliveryUrl(env, item.objectKey)),
+      media.map((item) =>
+        signedDeliveryUrl(env, {
+          mediaId: item.id,
+          ownerId: target.owner_id,
+        }),
+      ),
     );
     await db.update(`post_targets?id=eq.${target.id}`, {
       status: "publishing",
@@ -557,7 +570,11 @@ async function continueUpload(
     .map((item) => item.media_assets);
   const media =
     target.platform === "youtube"
-      ? selectedMedia.find((item) => item.mime_type.startsWith("video/"))
+      ? selectedMedia.find(
+          (item) =>
+            item.mime_type.startsWith("video/") ||
+            item.mime_type === "application/octet-stream",
+        )
       : selectedMedia[0];
   if (!media) throw new Error("Source media is missing");
   const url = await decryptSecret(
@@ -574,10 +591,15 @@ async function continueUpload(
     start + Number(state.chunkSize),
     Number(state.totalBytes),
   );
-  const object = await env.MEDIA_BUCKET.get(media.object_key, {
-    range: { offset: start, length: endExclusive - start },
-  });
-  if (!object?.body) throw new Error("Source media could not be read from R2");
+  const sourceBody = await fetchMediaRange(
+    env,
+    {
+      ...media,
+      owner_id: target.owner_id,
+    },
+    start,
+    endExclusive,
+  );
   let response: Response;
   try {
     response = await fetch(url, {
@@ -590,7 +612,7 @@ async function continueUpload(
         "Content-Length": String(endExclusive - start),
         "Content-Range": `bytes ${start}-${endExclusive - 1}/${state.totalBytes}`,
       },
-      body: object.body,
+      body: sourceBody,
     });
   } catch (error) {
     throw {
@@ -773,15 +795,17 @@ async function uploadYouTubeThumbnailIfSelected(
     .map((item) => item.media_assets)
     .find((item) => item.id === thumbnailId);
   if (!thumbnail) return "not_permitted";
-  const body = await env.MEDIA_BUCKET.get(thumbnail.object_key);
-  if (!body?.body) return "not_permitted";
   const adapter = adapterFor("youtube", env);
   if (!adapter.uploadThumbnail) return "not_permitted";
   try {
+    const body = await fetchMediaBody(env, {
+      ...thumbnail,
+      owner_id: target.owner_id,
+    });
     await adapter.uploadThumbnail(
       accessToken,
       videoId,
-      body.body,
+      body,
       thumbnail.mime_type,
     );
     return "uploaded";

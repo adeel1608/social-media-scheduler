@@ -28,7 +28,7 @@ Google documents that videos uploaded through `videos.insert` from unverified AP
 
 ## Upload and Short behavior
 
-The Worker initializes a resumable `videos.insert` session and streams R2 byte ranges across queue continuations. It never holds the entire video in memory. A Short uses the same endpoint; YouTube determines classification from current Shorts eligibility. Optional JPEG/PNG thumbnails stream to `thumbnails.set` after a video ID exists and must meet the documented 2 MB limit/channel permission.
+The Worker initializes a resumable `videos.insert` session and streams validated UploadThing byte ranges across queue continuations. It verifies upstream status and `Content-Range` and never holds the entire video in memory. A Short uses the same endpoint; YouTube determines classification from current Shorts eligibility. Optional JPEG/PNG thumbnails stream from the validated provider URL to `thumbnails.set` after a video ID exists and must meet the documented 2 MB limit/channel permission.
 
 ## Analytics
 

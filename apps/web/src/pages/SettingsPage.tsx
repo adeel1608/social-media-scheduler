@@ -7,7 +7,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useAuth } from "../context/AuthContext";
 import { apiRequest } from "../lib/api";
@@ -15,6 +15,24 @@ import { apiRequest } from "../lib/api";
 export function SettingsPage() {
   const { demoMode, session, signOut } = useAuth();
   const [message, setMessage] = useState("");
+  const [storage, setStorage] = useState({
+    activeBytes: demoMode ? 340 * 1024 ** 2 : 0,
+    reservedBytes: 0,
+    limitBytes: Math.floor(1.8 * 1024 ** 3),
+  });
+
+  useEffect(() => {
+    if (demoMode || !session) return;
+    void apiRequest<typeof storage>("/api/storage", session)
+      .then(setStorage)
+      .catch((reason: unknown) =>
+        setMessage(
+          reason instanceof Error
+            ? reason.message
+            : "Storage usage could not be loaded.",
+        ),
+      );
+  }, [demoMode, session]);
 
   async function exportData() {
     if (demoMode || !session) {
@@ -51,7 +69,7 @@ export function SettingsPage() {
       return;
     }
     const confirmation = window.prompt(
-      "This permanently removes scheduler data and private source media. Published platform content remains. Type DELETE to continue.",
+      "This permanently removes scheduler data and UploadThing source media. Published platform content remains. Type DELETE to continue.",
     );
     if (confirmation !== "DELETE") return;
     try {
@@ -174,17 +192,25 @@ export function SettingsPage() {
           </div>
           <div className="storage-meter">
             <div>
-              <strong>{demoMode ? "1.8 GB" : "Private R2"}</strong>
+              <strong>{formatBytes(storage.activeBytes)} counted</strong>
               <small>
-                {demoMode
-                  ? "Demonstration storage"
-                  : "Usage is reported in Cloudflare"}
+                {storage.reservedBytes
+                  ? `${formatBytes(storage.reservedBytes)} reserved by uploads`
+                  : "No upload reservations pending"}
               </small>
             </div>
             <span>
-              <i style={{ width: "18%" }} />
+              <i
+                style={{
+                  width: `${Math.min(100, (storage.activeBytes / storage.limitBytes) * 100)}%`,
+                }}
+              />
             </span>
-            <small>Quota depends on your Cloudflare plan.</small>
+            <small>
+              Postline limit: {formatBytes(storage.limitBytes)} of UploadThing
+              Free&apos;s finite 2 GB. Provider files remain public-readable
+              through opaque URLs.
+            </small>
           </div>
           <button className="soft-button" onClick={() => void exportData()}>
             <Download size={16} /> Export installation data
@@ -219,4 +245,10 @@ export function SettingsPage() {
       </div>
     </div>
   );
+}
+
+function formatBytes(value: number) {
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)} GiB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(0)} MiB`;
+  return `${Math.max(0, Math.round(value / 1024))} KiB`;
 }

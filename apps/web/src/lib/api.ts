@@ -1,6 +1,30 @@
 import type { Session } from "@supabase/supabase-js";
+import { genUploader } from "uploadthing/client";
 
 const apiUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8787";
+
+export interface UploadThingClient {
+  uploadFiles(
+    endpoint: "media",
+    options: {
+      files: File[];
+      input: {
+        filename: string;
+        mimeType: string;
+        sizeBytes: number;
+        width?: number;
+        height?: number;
+        durationSeconds?: number;
+      };
+      headers: HeadersInit;
+      onUploadProgress: (event: { progress: number }) => void;
+    },
+  ): Promise<unknown[]>;
+}
+
+const uploadThing = genUploader<any>({
+  url: new URL("/api/uploadthing", apiUrl),
+}) as unknown as UploadThingClient;
 
 export async function apiRequest<T>(
   path: string,
@@ -25,59 +49,45 @@ export async function uploadDirect(
   file: File,
   session: Session,
   onProgress: (percent: number) => void,
+  uploader: UploadThingClient = uploadThing,
 ): Promise<{ mediaId: string; objectKey: string }> {
   const metadata = await inspectMedia(file);
-  const descriptor = await apiRequest<any>("/api/uploads", session, {
-    method: "POST",
-    body: JSON.stringify({
+  const mimeType = file.type || "application/octet-stream";
+  const result = await uploader.uploadFiles("media", {
+    files: [file],
+    input: {
       filename: file.name,
-      mimeType: file.type,
+      mimeType,
       sizeBytes: file.size,
       ...metadata,
-    }),
+    },
+    headers: { Authorization: `Bearer ${session.access_token}` },
+    onUploadProgress: ({ progress }: { progress: number }) =>
+      onProgress(progress),
   });
-  if (descriptor.mode === "single") {
-    await xhrPut(descriptor.uploadUrl, file, file.type, onProgress);
-    await apiRequest(`/api/uploads/${descriptor.mediaId}/complete`, session, {
-      method: "POST",
-      body: JSON.stringify({ parts: [] }),
-    });
-    return descriptor;
-  }
-  const parts: Array<{ partNumber: number; etag: string }> = [];
-  const partSize = descriptor.partSize as number;
-  for (
-    let offset = 0, partNumber = 1;
-    offset < file.size;
-    offset += partSize, partNumber += 1
+  const uploaded = result[0] as
+    | {
+        key: string | null;
+        serverData?: {
+          mediaId?: string;
+          objectKey?: string;
+          uploadStatus?: string;
+        } | null;
+      }
+    | undefined;
+  if (
+    !uploaded?.key ||
+    !uploaded.serverData?.mediaId ||
+    uploaded.serverData.uploadStatus !== "complete"
   ) {
-    const part = file.slice(offset, Math.min(offset + partSize, file.size));
-    const signed = await apiRequest<{ uploadUrl: string }>(
-      `/api/uploads/${descriptor.mediaId}/part`,
-      session,
-      {
-        method: "POST",
-        body: JSON.stringify({ partNumber }),
-      },
+    throw new Error(
+      "UploadThing finished transferring the file, but the server did not confirm it for scheduling.",
     );
-    const etag = await xhrPut(
-      signed.uploadUrl,
-      part,
-      file.type,
-      (partPercent) =>
-        onProgress(
-          Math.round(
-            ((offset + (partPercent / 100) * part.size) / file.size) * 100,
-          ),
-        ),
-    );
-    parts.push({ partNumber, etag });
   }
-  await apiRequest(`/api/uploads/${descriptor.mediaId}/complete`, session, {
-    method: "POST",
-    body: JSON.stringify({ parts }),
-  });
-  return descriptor;
+  return {
+    mediaId: uploaded.serverData.mediaId,
+    objectKey: uploaded.serverData.objectKey ?? uploaded.key,
+  };
 }
 
 async function inspectMedia(file: File): Promise<{
@@ -126,28 +136,4 @@ async function inspectMedia(file: File): Promise<{
     }
   }
   return {};
-}
-
-function xhrPut(
-  url: string,
-  body: Blob,
-  contentType: string,
-  onProgress: (percent: number) => void,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open("PUT", url);
-    request.setRequestHeader("Content-Type", contentType);
-    request.upload.onprogress = (event) => {
-      if (event.lengthComputable)
-        onProgress(Math.round((event.loaded / event.total) * 100));
-    };
-    request.onerror = () => reject(new Error("Upload failed"));
-    request.onload = () => {
-      if (request.status >= 200 && request.status < 300)
-        resolve(request.getResponseHeader("ETag") ?? "");
-      else reject(new Error(`Upload failed (${request.status})`));
-    };
-    request.send(body);
-  });
 }

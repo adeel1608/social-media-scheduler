@@ -29,7 +29,8 @@ describe("fail-closed production configuration", () => {
       ENVIRONMENT: "development",
       TOKEN_ENCRYPTION_KEY: "not-base64",
       APP_URL: "http://public.example.com",
-      R2_PUBLIC_DELIVERY_HOST: "https://media.example.com/path",
+      WORKER_PUBLIC_URL: "https://worker.example.com/path",
+      UPLOADTHING_TOKEN: "not-a-token",
       META_APP_REVIEW_APPROVED: "false",
       TIKTOK_CONTENT_POSTING_AUDITED: "false",
       YOUTUBE_API_AUDIT_APPROVED: "false",
@@ -39,7 +40,8 @@ describe("fail-closed production configuration", () => {
       expect.arrayContaining([
         "TOKEN_ENCRYPTION_KEY",
         "APP_URL",
-        "R2_PUBLIC_DELIVERY_HOST",
+        "WORKER_PUBLIC_URL",
+        "UPLOADTHING_TOKEN",
       ]),
     );
   });
@@ -61,5 +63,13 @@ describe("fail-closed production configuration", () => {
     expect(invalid.invalid).toEqual(
       expect.arrayContaining(["OWNER_EMAIL", "NOTIFICATION_EMAIL"]),
     );
+  });
+
+  it("requires the Worker callback URL to be a credential-free origin", () => {
+    const status = configurationStatus({
+      WORKER_PUBLIC_URL: "https://user:password@worker.example.test/",
+    } as Env);
+
+    expect(status.invalid).toContain("WORKER_PUBLIC_URL");
   });
 });

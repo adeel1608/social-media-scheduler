@@ -1,6 +1,5 @@
 import {
   createPostSchema,
-  createMediaUploadSchema,
   localMelbourneToUtc,
   paginationSchema,
   platformSchema,
@@ -24,11 +23,15 @@ import { ownerDatabase, SupabaseRest } from "./database";
 import oauthRoutes from "./oauth-routes";
 import { processQueueJob, updateMediaRetentionForPost } from "./publisher";
 import {
-  completeMultipart,
-  createUpload,
-  signMultipartPart,
+  ACTIVE_MEDIA_LIMIT_BYTES,
+  deleteUploadThingFile,
+  deliveryResponse,
+  MediaStorageError,
+  reservationDeletionTarget,
+  type StoredMedia,
   verifyDeliveryRequest,
 } from "./storage";
+import { handleUploadThingRequest } from "./uploadthing";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -42,7 +45,14 @@ app.use(
   "/api/*",
   cors({
     origin: (origin, c) => (origin === c.env.APP_URL ? origin : ""),
-    allowHeaders: ["Authorization", "Content-Type"],
+    allowHeaders: [
+      "Authorization",
+      "Content-Type",
+      "B3",
+      "Traceparent",
+      "X-Uploadthing-Package",
+      "X-Uploadthing-Version",
+    ],
     allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
     maxAge: 600,
@@ -80,55 +90,60 @@ app.get("/health", (c) => {
 });
 
 app.on(["GET", "HEAD"], "/delivery/:encodedKey", async (c) => {
-  const objectKey = await verifyDeliveryRequest(
+  const reference = await verifyDeliveryRequest(
     c.env,
     c.req.param("encodedKey"),
     c.req.query("expires"),
     c.req.query("signature"),
   );
-  if (!objectKey) return c.body(null, 403);
-  const metadata = await c.env.MEDIA_BUCKET.head(objectKey);
-  if (!metadata) return c.body(null, 404);
-  const rangeHeader = c.req.header("Range");
-  let range: { offset: number; length: number } | undefined;
-  if (rangeHeader && c.req.method === "GET") {
-    const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
-    if (!match) return c.body(null, 416);
-    const offset = Number(match[1]);
-    const requestedEnd = match[2] ? Number(match[2]) : metadata.size - 1;
-    const end = Math.min(requestedEnd, metadata.size - 1);
-    if (!Number.isSafeInteger(offset) || offset < 0 || offset > end)
-      return c.body(null, 416);
-    range = { offset, length: end - offset + 1 };
-  }
-  const object =
-    c.req.method === "HEAD"
-      ? null
-      : await c.env.MEDIA_BUCKET.get(objectKey, range ? { range } : undefined);
-  if (c.req.method === "GET" && !object) return c.body(null, 404);
-  const headers = new Headers({
-    "Accept-Ranges": "bytes",
-    "Cache-Control": "private, no-store",
-    "Content-Length": String(range?.length ?? metadata.size),
-    ETag: metadata.httpEtag,
-    "X-Content-Type-Options": "nosniff",
-  });
-  metadata.writeHttpMetadata(headers);
-  if (range)
-    headers.set(
-      "Content-Range",
-      `bytes ${range.offset}-${range.offset + range.length - 1}/${metadata.size}`,
+  if (!reference) return c.body(null, 403);
+  const rows = await new SupabaseRest(c.env).select<StoredMedia[]>(
+    `media_assets?id=eq.${encodeURIComponent(reference.mediaId)}&owner_id=eq.${encodeURIComponent(reference.ownerId)}&storage_provider=eq.uploadthing&upload_status=eq.complete&deleted_at=is.null&select=id,owner_id,storage_provider,provider_file_key,provider_url,object_key,mime_type,size_bytes,upload_status,deleted_at&limit=1`,
+  );
+  const media = rows[0];
+  if (!media) return c.body(null, 404);
+  try {
+    return await deliveryResponse(
+      c.env,
+      media,
+      c.req.method as "GET" | "HEAD",
+      c.req.header("Range"),
     );
-  return new Response(object?.body ?? null, {
-    status: range ? 206 : 200,
-    headers,
-  });
+  } catch (error) {
+    if (error instanceof MediaStorageError)
+      return c.json({ error: error.code }, error.status as 404 | 416 | 502);
+    throw error;
+  }
 });
 
 app.route("/api/oauth", oauthRoutes);
+app.on(["GET", "POST"], "/api/uploadthing", (c) =>
+  handleUploadThingRequest(c.env, c.req.raw),
+);
 app.use("/api/*", ownerAuth);
 
 app.get("/api/setup", (c) => c.json(configurationStatus(c.env)));
+
+app.get("/api/storage", async (c) => {
+  const rows = await ownerDatabase(c.env, c.get("jwt")).rpc<
+    Array<{
+      active_bytes: number;
+      reserved_bytes: number;
+      limit_bytes: number;
+    }>
+  >("uploadthing_storage_usage", {});
+  const usage = rows[0] ?? {
+    active_bytes: 0,
+    reserved_bytes: 0,
+    limit_bytes: ACTIVE_MEDIA_LIMIT_BYTES,
+  };
+  return c.json({
+    activeBytes: Number(usage.active_bytes),
+    reservedBytes: Number(usage.reserved_bytes),
+    limitBytes: Number(usage.limit_bytes),
+    providerPlanBytes: 2 * 1024 ** 3,
+  });
+});
 
 app.get("/api/accounts", async (c) => {
   const db = ownerDatabase(c.env, c.get("jwt"));
@@ -270,7 +285,7 @@ app.get("/api/export", async (c) => {
   return c.json({
     exportedAt: new Date().toISOString(),
     warning:
-      "Encrypted platform credentials, OAuth state secrets, object keys, and email provider IDs are intentionally excluded.",
+      "Encrypted platform credentials, OAuth state secrets, provider file keys, and email provider IDs are intentionally excluded.",
     accounts,
     media,
     posts,
@@ -328,13 +343,58 @@ app.post("/api/installation/delete", async (c) => {
       // Continue local erasure when a provider token is already invalid or unreachable.
     }
   }
-  const media = await serviceDb.select<Array<{ object_key: string }>>(
-    `media_assets?owner_id=eq.${ownerId}&deleted_at=is.null&select=object_key`,
+  const media = await serviceDb.select<
+    Array<{
+      id: string;
+      storage_provider: string;
+      provider_file_key: string | null;
+    }>
+  >(
+    `media_assets?owner_id=eq.${ownerId}&deleted_at=is.null&select=id,storage_provider,provider_file_key`,
   );
-  for (let index = 0; index < media.length; index += 1_000)
-    await c.env.MEDIA_BUCKET.delete(
-      media.slice(index, index + 1_000).map((item) => item.object_key),
+  const unsupported = media.find(
+    (item) => item.storage_provider !== "uploadthing",
+  );
+  if (unsupported)
+    return c.json(
+      {
+        error: "legacy_media_requires_review",
+        message:
+          "A legacy media record must be resolved before deleting the installation.",
+      },
+      409,
     );
+  for (const item of media) {
+    await serviceDb.update(`media_assets?id=eq.${item.id}`, {
+      deletion_status: "pending",
+      deletion_attempted_at: new Date().toISOString(),
+      deletion_last_error: null,
+    });
+    try {
+      const deletion = reservationDeletionTarget(item);
+      await deleteUploadThingFile(c.env, deletion.identifier, deletion.keyType);
+      await serviceDb.update(`media_assets?id=eq.${item.id}`, {
+        deletion_status: "confirmed",
+        provider_deleted_at: new Date().toISOString(),
+        upload_status: "deleted",
+        deleted_at: new Date().toISOString(),
+        deletion_last_error: null,
+      });
+    } catch {
+      await serviceDb.update(`media_assets?id=eq.${item.id}`, {
+        deletion_status: "failed",
+        deletion_last_error: "provider_delete_not_confirmed",
+      });
+      return c.json(
+        {
+          error: "provider_delete_not_confirmed",
+          message:
+            "UploadThing did not confirm every file deletion. Installation data was preserved for a safe retry.",
+        },
+        502,
+      );
+    }
+  }
   await serviceDb.rpc("delete_installation_data", { p_owner_id: ownerId });
   const authResponse = await fetch(
     `${c.env.SUPABASE_URL.replace(/\/$/, "")}/auth/v1/admin/users/${encodeURIComponent(ownerId)}`,
@@ -369,6 +429,9 @@ app.post("/api/posts", async (c) => {
     Array<{
       id: string;
       object_key: string;
+      storage_provider: string;
+      provider_file_key: string | null;
+      provider_url: string | null;
       mime_type: string;
       size_bytes: number;
       width?: number;
@@ -376,7 +439,7 @@ app.post("/api/posts", async (c) => {
       duration_seconds?: number;
     }>
   >(
-    `media_assets?owner_id=eq.${c.get("user").id}&id=in.(${parsed.data.mediaIds.map(encodeURIComponent).join(",")})&upload_status=eq.complete&select=id,object_key,mime_type,size_bytes,width,height,duration_seconds`,
+    `media_assets?owner_id=eq.${c.get("user").id}&id=in.(${parsed.data.mediaIds.map(encodeURIComponent).join(",")})&storage_provider=eq.uploadthing&upload_status=eq.complete&deleted_at=is.null&select=id,object_key,storage_provider,provider_file_key,provider_url,mime_type,size_bytes,width,height,duration_seconds`,
   );
   if (mediaRows.length !== new Set(parsed.data.mediaIds).size)
     return c.json(
@@ -391,6 +454,9 @@ app.post("/api/posts", async (c) => {
     return {
       id: item.id,
       objectKey: item.object_key,
+      storageProvider: item.storage_provider,
+      providerFileKey: item.provider_file_key,
+      providerUrl: item.provider_url,
       mimeType: item.mime_type,
       sizeBytes: item.size_bytes,
       ...(item.width ? { width: item.width } : {}),
@@ -503,8 +569,14 @@ app.post("/api/targets/:id/resolve", async (c) => {
 
 app.delete("/api/media/:id", async (c) => {
   const db = ownerDatabase(c.env, c.get("jwt"));
-  const rows = await db.select<Array<{ id: string; object_key: string }>>(
-    `media_assets?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&deleted_at=is.null&select=id,object_key&limit=1`,
+  const rows = await db.select<
+    Array<{
+      id: string;
+      storage_provider: string;
+      provider_file_key: string | null;
+    }>
+  >(
+    `media_assets?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&deleted_at=is.null&select=id,storage_provider,provider_file_key&limit=1`,
   );
   const media = rows[0];
   if (!media) return c.json({ error: "media_not_found" }, 404);
@@ -516,110 +588,59 @@ app.delete("/api/media/:id", async (c) => {
   const statuses = links.flatMap(
     (link) => link.posts?.post_targets?.map((target) => target.status) ?? [],
   );
-  if (
-    statuses.some((status) =>
-      ["queued", "publishing", "processing", "needs_review"].includes(status),
-    )
-  )
+  if (statuses.some((status) => !["published", "cancelled"].includes(status)))
     return c.json(
       {
         error: "media_still_required",
         message:
-          "Resolve active or ambiguous targets before deleting their source media.",
+          "Media for scheduled, incomplete, failed, or ambiguous targets must be retained.",
       },
       409,
     );
-  await c.env.MEDIA_BUCKET.delete(media.object_key);
+  if (media.storage_provider !== "uploadthing")
+    return c.json(
+      {
+        error: "media_provider_unavailable",
+        message: "This legacy or incomplete media record requires review.",
+      },
+      409,
+    );
+  await db.update(
+    `media_assets?id=eq.${media.id}&owner_id=eq.${c.get("user").id}`,
+    {
+      deletion_status: "pending",
+      deletion_attempted_at: new Date().toISOString(),
+      deletion_last_error: null,
+    },
+  );
+  try {
+    const deletion = reservationDeletionTarget(media);
+    await deleteUploadThingFile(c.env, deletion.identifier, deletion.keyType);
+  } catch {
+    await db.update(
+      `media_assets?id=eq.${media.id}&owner_id=eq.${c.get("user").id}`,
+      {
+        deletion_status: "failed",
+        deletion_last_error: "provider_delete_not_confirmed",
+      },
+    );
+    return c.json(
+      {
+        error: "provider_delete_not_confirmed",
+        message:
+          "UploadThing did not confirm deletion. The record was retained.",
+      },
+      502,
+    );
+  }
   await db.update(
     `media_assets?id=eq.${media.id}&owner_id=eq.${c.get("user").id}`,
     {
       upload_status: "deleted",
       deleted_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    },
-  );
-  return c.json({ ok: true });
-});
-
-app.post("/api/uploads", async (c) => {
-  const allowed = await ownerDatabase(c.env, c.get("jwt")).rpc<boolean>(
-    "consume_rate_limit",
-    { p_route: "upload_start", p_limit: 30, p_window_seconds: 60 },
-  );
-  if (!allowed) return c.json({ error: "rate_limit_exceeded" }, 429);
-  const parsed = createMediaUploadSchema.safeParse(await c.req.json());
-  if (!parsed.success)
-    return c.json({ error: "invalid_media", issues: parsed.error.issues }, 400);
-  const input = parsed.data;
-  const upload = await createUpload(c.env, c.get("user").id, input);
-  if (!upload.ok)
-    return c.json({ error: "invalid_media", issues: upload.issues }, 400);
-  const db = ownerDatabase(c.env, c.get("jwt"));
-  const rows = await db.insert<Array<{ id: string }>>("media_assets", {
-    owner_id: c.get("user").id,
-    object_key: upload.objectKey,
-    original_filename: input.filename,
-    mime_type: input.mimeType,
-    size_bytes: input.sizeBytes,
-    width: input.width,
-    height: input.height,
-    duration_seconds: input.durationSeconds,
-    upload_status: "uploading",
-    ...(upload.mode === "multipart" ? { upload_id: upload.uploadId } : {}),
-  });
-  return c.json({ mediaId: rows[0]!.id, ...upload }, 201);
-});
-
-app.post("/api/uploads/:id/part", async (c) => {
-  const input = (await c.req.json()) as { partNumber: number };
-  const db = ownerDatabase(c.env, c.get("jwt"));
-  const rows = await db.select<
-    Array<{ object_key: string; upload_id: string }>
-  >(
-    `media_assets?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&upload_status=eq.uploading&upload_id=not.is.null&select=object_key,upload_id&limit=1`,
-  );
-  const media = rows[0];
-  if (
-    !media ||
-    !Number.isInteger(input.partNumber) ||
-    input.partNumber < 1 ||
-    input.partNumber > 10_000
-  ) {
-    return c.json({ error: "invalid_upload_part" }, 400);
-  }
-  return c.json(
-    await signMultipartPart(c.env, {
-      objectKey: media.object_key,
-      uploadId: media.upload_id,
-      partNumber: input.partNumber,
-    }),
-  );
-});
-
-app.post("/api/uploads/:id/complete", async (c) => {
-  const input = (await c.req.json()) as { parts: R2UploadedPart[] };
-  const db = ownerDatabase(c.env, c.get("jwt"));
-  const rows = await db.select<
-    Array<{ object_key: string; upload_id: string | null }>
-  >(
-    `media_assets?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&upload_status=eq.uploading&select=object_key,upload_id&limit=1`,
-  );
-  const media = rows[0];
-  if (!media) return c.json({ error: "upload_not_found" }, 404);
-  if (media.upload_id)
-    await completeMultipart(c.env, {
-      objectKey: media.object_key,
-      uploadId: media.upload_id,
-      parts: input.parts,
-    });
-  else if (!(await c.env.MEDIA_BUCKET.head(media.object_key)))
-    return c.json({ error: "uploaded_object_not_found" }, 409);
-  await db.update(
-    `media_assets?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}`,
-    {
-      upload_status: "complete",
-      uploaded_parts: input.parts,
-      upload_id: null,
+      provider_deleted_at: new Date().toISOString(),
+      deletion_status: "confirmed",
+      deletion_last_error: null,
       updated_at: new Date().toISOString(),
     },
   );
@@ -692,7 +713,7 @@ const worker = {
     if (scheduledMinute === 17) context.waitUntil(syncAnalyticsBatch(env, 25));
     if (scheduledMinute === 23) {
       context.waitUntil(cleanupMedia(env));
-      context.waitUntil(abortStaleUploads(env));
+      context.waitUntil(cleanupExpiredReservations(env));
     }
   },
   async queue(batch: MessageBatch<QueueJob>, env: Env) {
@@ -738,45 +759,93 @@ async function syncConfiguredApprovalStates(env: Env, db: SupabaseRest) {
 
 async function cleanupMedia(env: Env) {
   const db = new SupabaseRest(env);
-  const rows = await db.select<Array<{ id: string; object_key: string }>>(
-    "media_assets?retain_until=lte.now()&deleted_at=is.null&deletion_blocked_reason=is.null&select=id,object_key&limit=100",
+  const rows = await db.select<
+    Array<{
+      id: string;
+      storage_provider: string;
+      provider_file_key: string | null;
+    }>
+  >(
+    "media_assets?retain_until=lte.now()&storage_provider=eq.uploadthing&upload_status=eq.complete&deleted_at=is.null&deletion_blocked_reason=is.null&select=id,storage_provider,provider_file_key&limit=100",
   );
   for (const item of rows) {
-    const targets = await db.select<Array<{ status: string }>>(
+    const links = await db.select<
+      Array<{ posts: { post_targets: Array<{ status: string }> } }>
+    >(
       `post_media?media_asset_id=eq.${item.id}&select=posts(post_targets(status))`,
     );
-    const serialized = JSON.stringify(targets);
-    if (
-      serialized.includes('"failed"') ||
-      serialized.includes('"needs_review"')
-    )
+    const statuses = links.flatMap(
+      (link) => link.posts?.post_targets?.map((target) => target.status) ?? [],
+    );
+    if (!statuses.length || statuses.some((status) => status !== "published"))
       continue;
-    await env.MEDIA_BUCKET.delete(item.object_key);
-    await db.update(`media_assets?id=eq.${item.id}`, {
-      upload_status: "deleted",
-      deleted_at: new Date().toISOString(),
-    });
+    if (!item.provider_file_key) continue;
+    await deleteMediaFromUploadThing(env, db, item.id, item.provider_file_key);
   }
 }
 
-async function abortStaleUploads(env: Env) {
+async function cleanupExpiredReservations(env: Env) {
   const db = new SupabaseRest(env);
-  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
   const rows = await db.select<
-    Array<{ id: string; object_key: string; upload_id: string | null }>
+    Array<{ id: string; provider_file_key: string | null }>
   >(
-    `media_assets?upload_status=eq.uploading&created_at=lt.${cutoff}&select=id,object_key,upload_id&limit=100`,
+    "media_assets?storage_provider=eq.uploadthing&upload_status=eq.uploading&reservation_expires_at=lte.now()&deleted_at=is.null&select=id,provider_file_key&limit=100",
   );
   for (const item of rows) {
-    if (item.upload_id)
-      await env.MEDIA_BUCKET.resumeMultipartUpload(
-        item.object_key,
-        item.upload_id,
-      ).abort();
-    else await env.MEDIA_BUCKET.delete(item.object_key);
-    await db.update(`media_assets?id=eq.${item.id}`, {
-      upload_status: "aborted",
-      upload_id: null,
+    try {
+      await db.update(`media_assets?id=eq.${item.id}`, {
+        deletion_status: "pending",
+        deletion_attempted_at: new Date().toISOString(),
+        deletion_last_error: null,
+      });
+      const deletion = reservationDeletionTarget(item);
+      await deleteUploadThingFile(env, deletion.identifier, deletion.keyType);
+      const deletedAt = new Date().toISOString();
+      await db.update(`media_assets?id=eq.${item.id}`, {
+        upload_status: "aborted",
+        deletion_status: "confirmed",
+        provider_deleted_at: deletedAt,
+        deleted_at: deletedAt,
+        deletion_last_error: null,
+        updated_at: deletedAt,
+      });
+    } catch {
+      await db.update(`media_assets?id=eq.${item.id}`, {
+        deletion_status: "failed",
+        deletion_last_error: "provider_delete_not_confirmed",
+        updated_at: new Date().toISOString(),
+      });
+    }
+  }
+}
+
+async function deleteMediaFromUploadThing(
+  env: Env,
+  db: SupabaseRest,
+  mediaId: string,
+  providerFileKey: string,
+) {
+  await db.update(`media_assets?id=eq.${mediaId}`, {
+    deletion_status: "pending",
+    deletion_attempted_at: new Date().toISOString(),
+    deletion_last_error: null,
+  });
+  try {
+    await deleteUploadThingFile(env, providerFileKey);
+    const deletedAt = new Date().toISOString();
+    await db.update(`media_assets?id=eq.${mediaId}`, {
+      upload_status: "deleted",
+      deletion_status: "confirmed",
+      provider_deleted_at: deletedAt,
+      deleted_at: deletedAt,
+      deletion_last_error: null,
+      updated_at: deletedAt,
+    });
+  } catch {
+    await db.update(`media_assets?id=eq.${mediaId}`, {
+      deletion_status: "failed",
+      deletion_last_error: "provider_delete_not_confirmed",
+      updated_at: new Date().toISOString(),
     });
   }
 }

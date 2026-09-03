@@ -1,9 +1,0 @@
-[
-  {
-    "AllowedOrigins": ["https://YOUR_WEB_HOST"],
-    "AllowedMethods": ["GET", "HEAD", "PUT"],
-    "AllowedHeaders": ["Content-Type", "Content-Length", "ETag", "x-amz-*"],
-    "ExposeHeaders": ["ETag"],
-    "MaxAgeSeconds": 900
-  }
-]

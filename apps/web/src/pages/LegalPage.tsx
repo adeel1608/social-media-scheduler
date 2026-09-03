@@ -16,11 +16,11 @@ const content = {
       ],
       [
         "Storage",
-        "Platform credentials are encrypted at application level. Media is private and delivered through short-lived URLs. Successful media becomes eligible for removal after seven days.",
+        "Platform credentials are encrypted at application level. UploadThing Free media is public-readable through opaque URLs; Postline gives platforms a separate short-lived signed delivery URL. Successful media becomes eligible for removal after seven days.",
       ],
       [
         "Third parties",
-        "Supabase, Cloudflare, Resend, Meta, TikTok and Google process data according to the services configured by the installation owner.",
+        "Supabase, Cloudflare, UploadThing, Resend, Meta, TikTok and Google process data according to the services configured by the installation owner.",
       ],
     ],
   },
@@ -58,11 +58,11 @@ const content = {
       ],
       [
         "Delete retained media",
-        "Open Needs attention and delete media associated with failed or review-required posts after resolving any ambiguity.",
+        "Failed, incomplete, and review-required media is retained. After every selected target succeeds, Postline deletes the provider file once the seven-day retention period ends.",
       ],
       [
         "Delete the installation",
-        "Export anything you need, then use Settings → Delete installation data. Remove the Supabase project and R2 bucket if you want infrastructure-level deletion.",
+        "Export anything you need, then use Settings → Delete installation data. Remove the Supabase project and UploadThing application if you want infrastructure-level deletion.",
       ],
       [
         "Platform content",

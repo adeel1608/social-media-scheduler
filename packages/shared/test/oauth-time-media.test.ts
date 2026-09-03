@@ -7,7 +7,6 @@ import {
   createPkceVerifier,
   isOAuthStateValid,
   localMelbourneToUtc,
-  shouldUseMultipart,
   utcToMelbourne,
   validateMedia,
 } from "../src";
@@ -75,11 +74,6 @@ describe("media validation", () => {
     expect(
       validateMedia({ mimeType: "image/webp", sizeBytes: 10 }, "instagram"),
     ).toContainEqual(expect.objectContaining({ field: "mimeType" }));
-  });
-
-  it("selects multipart upload at 100 MB", () => {
-    expect(shouldUseMultipart(99 * 1024 * 1024)).toBe(false);
-    expect(shouldUseMultipart(100 * 1024 * 1024)).toBe(true);
   });
 });
 

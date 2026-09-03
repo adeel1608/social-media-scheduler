@@ -64,15 +64,3 @@ export function validateMedia(
   }
   return issues;
 }
-
-export function shouldUseMultipart(sizeBytes: number): boolean {
-  return sizeBytes >= 100 * 1024 * 1024;
-}
-
-export function randomObjectKey(ownerId: string, extension = "bin"): string {
-  const random = crypto.getRandomValues(new Uint8Array(24));
-  const token = Array.from(random, (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  return `${ownerId}/${new Date().toISOString().slice(0, 10)}/${token}.${extension.replace(/^\./, "")}`;
-}

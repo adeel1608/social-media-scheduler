@@ -14,11 +14,6 @@ META_APP_REVIEW_APPROVED = "false"
 TIKTOK_CONTENT_POSTING_AUDITED = "false"
 YOUTUBE_API_AUDIT_APPROVED = "false"
 
-[[r2_buckets]]
-binding = "MEDIA_BUCKET"
-bucket_name = "social-scheduler-media"
-preview_bucket_name = "social-scheduler-media-preview"
-
 [[queues.producers]]
 binding = "PUBLISH_QUEUE"
 queue = "social-scheduler-publish"

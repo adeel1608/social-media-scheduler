@@ -2,6 +2,8 @@
 
 Documentation verified: **2026-09-03**. Only official provider APIs are used. Provider docs and policies change; re-verify before deployment or review submission.
 
+All formats share the same storage boundary: UploadThing Free has finite 2 GB storage, Postline enforces a concurrency-safe 1.8 GiB active/outstanding cap, and opaque provider URLs are public-readable. Signed Worker delivery URLs do not make the underlying provider files private. Successful media is deleted seven days after every selected target publishes; failed, ambiguous, incomplete, and pending media is retained.
+
 ## Publication
 
 | Platform/content         | Official support                                         | Account                                                                                                              | Least scopes used                                                                            | Required metadata/workflow                                                                                                                                                                               | Media and known limits                                                                                                                                                       | Review/approval                                                                                                                                                                                         |

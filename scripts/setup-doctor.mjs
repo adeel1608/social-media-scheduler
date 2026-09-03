@@ -4,6 +4,7 @@ const env = { ...process.env, ...(await loadDotEnv()) };
 
 const checks = [
   ["APP_URL", isUrl],
+  ["WORKER_PUBLIC_URL", isUrl],
   ["OWNER_EMAIL", isEmail],
   ["NOTIFICATION_EMAIL", isEmail],
   ["TIMEZONE", isTimeZone],
@@ -13,10 +14,7 @@ const checks = [
   ["TOKEN_ENCRYPTION_KEY", isEncryptionKey],
   ["CLOUDFLARE_ACCOUNT_ID", isIdentifier],
   ["CLOUDFLARE_API_TOKEN", isPresent],
-  ["R2_BUCKET_NAME", isIdentifier],
-  ["R2_ACCESS_KEY_ID", isPresent],
-  ["R2_SECRET_ACCESS_KEY", isPresent],
-  ["R2_PUBLIC_DELIVERY_HOST", isHttpsOrigin],
+  ["UPLOADTHING_TOKEN", isUploadThingToken],
   ["RESEND_API_KEY", (value) => /^re_/.test(value)],
   ["RESEND_FROM", isPresent],
   ["META_APP_ID", isPresent],
@@ -143,19 +141,6 @@ function isHttpsUrl(value) {
     return false;
   }
 }
-function isHttpsOrigin(value) {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      url.pathname === "/" &&
-      !url.search &&
-      !url.hash
-    );
-  } catch {
-    return false;
-  }
-}
 function isTimeZone(value) {
   try {
     new Intl.DateTimeFormat("en-AU", { timeZone: value });
@@ -170,6 +155,23 @@ function isIdentifier(value) {
 function isEncryptionKey(value) {
   try {
     return Buffer.from(value, "base64").byteLength === 32;
+  } catch {
+    return false;
+  }
+}
+function isUploadThingToken(value) {
+  try {
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    const parsed = JSON.parse(
+      Buffer.from(normalized, "base64").toString("utf8"),
+    );
+    return (
+      typeof parsed.appId === "string" &&
+      parsed.appId.length >= 3 &&
+      typeof parsed.apiKey === "string" &&
+      parsed.apiKey.length >= 8 &&
+      Array.isArray(parsed.regions)
+    );
   } catch {
     return false;
   }

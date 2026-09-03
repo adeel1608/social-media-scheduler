@@ -12,9 +12,9 @@
   "dependencies": {
     "@scheduler/platforms": "workspace:*",
     "@scheduler/shared": "workspace:*",
-    "aws4fetch": "1.0.20",
     "hono": "4.13.5",
-    "luxon": "3.7.2"
+    "luxon": "3.7.2",
+    "uploadthing": "7.7.4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260903.1",

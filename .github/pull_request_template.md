@@ -3,7 +3,7 @@
 - React/Vite owner dashboard talks to a Cloudflare Worker with Supabase magic-link authentication.
 - Supabase Postgres stores one post plus independent Instagram, TikTok, and YouTube targets.
 - UTC cron claims due work transactionally; Cloudflare Queue delivers target IDs to lease-aware consumers.
-- Source media stays in private R2 and is exposed to providers only through expiring opaque delivery URLs.
+- Owner-authorized direct uploads use UploadThing; signed Worker delivery resolves media server-side and validates every upstream URL/range.
 
 ## Features
 
@@ -16,9 +16,9 @@
 
 ## Verification
 
-- `pnpm check`
-- `pnpm test:e2e`
-- `pnpm audit --audit-level high`
+- `corepack pnpm check`
+- `corepack pnpm test:e2e`
+- `corepack pnpm audit --audit-level high`
 - Cloudflare Worker dry-run build
 - Desktop visual QA at 1440 x 900
 
@@ -29,7 +29,7 @@ Deployment is intentionally manual and credential-gated. Follow `HUMAN_SETUP.md`
 ## Outstanding human actions
 
 - Provision and migrate the owner's Supabase project.
-- Provision Cloudflare Worker, Queue, R2, cron, custom domains, and secrets.
+- Create an UploadThing app/token and provision Cloudflare Worker, Queue, cron, custom domains, and secrets. R2 is not used.
 - Verify a Resend sender.
 - Register Meta, TikTok, and Google applications and complete their access reviews or audits.
 - Customize and review the legal templates.
