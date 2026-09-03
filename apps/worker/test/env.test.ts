@@ -43,4 +43,23 @@ describe("fail-closed production configuration", () => {
       ]),
     );
   });
+
+  it("validates email settings with bounded string checks", () => {
+    const valid = configurationStatus({
+      OWNER_EMAIL: "owner@example.com",
+      NOTIFICATION_EMAIL: "alerts@example.com",
+    } as Env);
+
+    expect(valid.invalid).not.toContain("OWNER_EMAIL");
+    expect(valid.invalid).not.toContain("NOTIFICATION_EMAIL");
+
+    const invalid = configurationStatus({
+      OWNER_EMAIL: "owner @example.com",
+      NOTIFICATION_EMAIL: "alerts@example",
+    } as Env);
+
+    expect(invalid.invalid).toEqual(
+      expect.arrayContaining(["OWNER_EMAIL", "NOTIFICATION_EMAIL"]),
+    );
+  });
 });

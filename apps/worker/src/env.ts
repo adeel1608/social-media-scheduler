@@ -69,6 +69,22 @@ export const requiredProductionEnv: Array<keyof Env> = [
   "GOOGLE_REDIRECT_URI",
 ];
 
+function isBasicEmail(value: string): boolean {
+  if (value.length === 0 || value.length > 254) return false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 32 || code === 127) return false;
+  }
+
+  const at = value.indexOf("@");
+  if (at <= 0 || at !== value.lastIndexOf("@")) return false;
+
+  const domain = value.slice(at + 1);
+  const lastDot = domain.lastIndexOf(".");
+  return lastDot > 0 && lastDot < domain.length - 1;
+}
+
 export function configurationStatus(env: Env) {
   const missing = requiredProductionEnv.filter((key) => !env[key]);
   const invalid: Array<keyof Env> = [];
@@ -106,7 +122,7 @@ export function configurationStatus(env: Env) {
     }
   }
   for (const key of ["OWNER_EMAIL", "NOTIFICATION_EMAIL"] as const) {
-    if (env[key] && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(env[key]))
+    if (env[key] && !isBasicEmail(env[key]))
       invalid.push(key);
   }
   if (env.TIMEZONE) {
