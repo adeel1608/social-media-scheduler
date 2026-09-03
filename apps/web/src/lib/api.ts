@@ -92,7 +92,7 @@ async function inspectMedia(file: File): Promise<{
       bitmap.close();
       return dimensions;
     } catch {
-      throw new Error("The browser could not read this imageâ€™s dimensions.");
+      throw new Error("The browser could not read this image’s dimensions.");
     }
   }
   if (file.type.startsWith("video/")) {
@@ -116,11 +116,9 @@ async function inspectMedia(file: File): Promise<{
         video.onerror = () => {
           window.clearTimeout(timeout);
           reject(
-            new Error("The browser could not read this videoâ€™s metadata."),
+            new Error("The browser could not read this video’s metadata."),
           );
         };
-        // URL.createObjectURL returns an opaque browser-generated blob URL.
-        // No filename or other user-controlled text is assigned here.
         video.src = source;
       });
     } finally {

@@ -122,8 +122,7 @@ export function configurationStatus(env: Env) {
     }
   }
   for (const key of ["OWNER_EMAIL", "NOTIFICATION_EMAIL"] as const) {
-    if (env[key] && !isBasicEmail(env[key]))
-      invalid.push(key);
+    if (env[key] && !isBasicEmail(env[key])) invalid.push(key);
   }
   if (env.TIMEZONE) {
     try {
