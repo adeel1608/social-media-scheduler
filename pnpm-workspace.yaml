@@ -2,8 +2,13 @@ packages:
   - apps/*
   - packages/*
 
+overrides:
+  effect: 3.20.0
+
 allowBuilds:
   esbuild: true
+  # Optional native msgpackr acceleration; Cloudflare Workers use the JS path.
+  msgpackr-extract: false
   supabase: true
   workerd: true
 
