@@ -1,0 +1,38 @@
+name = "social-media-scheduler-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[vars]
+ENVIRONMENT = "production"
+TIMEZONE = "Australia/Melbourne"
+LIVE_TEST_CONFIRM = "false"
+TOKEN_ENCRYPTION_KEY_VERSION = "v1"
+META_GRAPH_VERSION = "v23.0"
+META_APP_REVIEW_APPROVED = "false"
+TIKTOK_CONTENT_POSTING_AUDITED = "false"
+YOUTUBE_API_AUDIT_APPROVED = "false"
+
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "social-scheduler-media"
+preview_bucket_name = "social-scheduler-media-preview"
+
+[[queues.producers]]
+binding = "PUBLISH_QUEUE"
+queue = "social-scheduler-publish"
+
+[[queues.consumers]]
+queue = "social-scheduler-publish"
+max_batch_size = 5
+max_batch_timeout = 10
+max_retries = 0
+dead_letter_queue = "social-scheduler-dead-letter"
+
+[triggers]
+crons = ["* * * * *"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1

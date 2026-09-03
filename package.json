@@ -1,0 +1,39 @@
+{
+  "name": "social-media-scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Single-owner, self-hosted Instagram, TikTok, and YouTube scheduler",
+  "license": "MIT",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "corepack pnpm --filter @scheduler/web dev",
+    "dev:worker": "corepack pnpm --filter @scheduler/worker dev",
+    "build": "corepack pnpm -r --if-present build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "corepack pnpm -r --if-present typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "corepack pnpm --filter @scheduler/web test:e2e",
+    "db:validate": "node scripts/validate-migrations.mjs",
+    "setup-doctor": "node scripts/setup-doctor.mjs",
+    "secrets:scan": "node scripts/secret-scan.mjs",
+    "audit": "corepack pnpm audit --audit-level high",
+    "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm build && corepack pnpm db:validate && corepack pnpm secrets:scan"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.10.1",
+    "eslint": "10.9.1",
+    "prettier": "3.9.6",
+    "typescript": "5.9.2",
+    "typescript-eslint": "8.69.0",
+    "vitest": "4.1.11"
+  }
+}
