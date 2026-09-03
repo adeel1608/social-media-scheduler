@@ -5,25 +5,40 @@ import type { Env } from "./env";
 
 export type Variables = { user: AuthenticatedUser; jwt: string };
 
-export async function ownerAuth(
-  c: Context<{ Bindings: Env; Variables: Variables }>,
-  next: Next,
-) {
-  const authorization = c.req.header("Authorization") ?? "";
+export type OwnerAuthentication =
+  | { authenticated: true; user: AuthenticatedUser; jwt: string }
+  | { authenticated: false; error: string; status: 401 | 403 };
+
+export async function authenticateOwnerRequest(
+  env: Env,
+  request: Request,
+  fetcher: typeof fetch = fetch,
+): Promise<OwnerAuthentication> {
+  const authorization = request.headers.get("Authorization") ?? "";
   if (!authorization.startsWith("Bearer ")) {
-    return c.json({ error: "authentication_required" }, 401);
+    return {
+      authenticated: false,
+      error: "authentication_required",
+      status: 401,
+    };
   }
   const jwt = authorization.slice("Bearer ".length);
-  const response = await fetch(
-    `${c.env.SUPABASE_URL.replace(/\/$/, "")}/auth/v1/user`,
+  const response = await fetcher(
+    `${env.SUPABASE_URL.replace(/\/$/, "")}/auth/v1/user`,
     {
       headers: {
-        apikey: c.env.SUPABASE_ANON_KEY,
+        apikey: env.SUPABASE_ANON_KEY,
         Authorization: authorization,
       },
     },
   );
-  if (!response.ok) return c.json({ error: "invalid_or_expired_session" }, 401);
+  if (!response.ok) {
+    return {
+      authenticated: false,
+      error: "invalid_or_expired_session",
+      status: 401,
+    };
+  }
   const payload = (await response.json()) as {
     id: string;
     email?: string;
@@ -34,10 +49,25 @@ export async function ownerAuth(
     ...(payload.email ? { email: payload.email } : {}),
     ...(payload.exp ? { expiresAt: payload.exp } : {}),
   };
-  const decision = authorizeOwner(user, c.env.OWNER_EMAIL);
-  if (!decision.authorized)
-    return c.json({ error: decision.reason }, decision.status);
-  c.set("user", user);
-  c.set("jwt", jwt);
+  const decision = authorizeOwner(user, env.OWNER_EMAIL);
+  if (!decision.authorized) {
+    return {
+      authenticated: false,
+      error: decision.reason,
+      status: decision.status as 401 | 403,
+    };
+  }
+  return { authenticated: true, user, jwt };
+}
+
+export async function ownerAuth(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  next: Next,
+) {
+  const authentication = await authenticateOwnerRequest(c.env, c.req.raw);
+  if (!authentication.authenticated)
+    return c.json({ error: authentication.error }, authentication.status);
+  c.set("user", authentication.user);
+  c.set("jwt", authentication.jwt);
   await next();
 }

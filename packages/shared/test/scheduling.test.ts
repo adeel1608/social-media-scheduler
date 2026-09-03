@@ -210,5 +210,12 @@ describe("media retention", () => {
         now,
       ),
     ).toBe(false);
+    expect(
+      mediaDeletionEligible(
+        ["published", "needs_review"],
+        "2026-08-01T00:00:00Z",
+        now,
+      ),
+    ).toBe(false);
   });
 });

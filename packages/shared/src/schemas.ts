@@ -8,7 +8,9 @@ export const targetStatusSchema = z.enum(targetStatuses);
 export const mediaDescriptorSchema = z.object({
   id: z.string().uuid(),
   objectKey: z.string().min(12).max(512),
-  mimeType: z.string().regex(/^(image|video)\/[a-z0-9.+-]+$/i),
+  mimeType: z
+    .string()
+    .regex(/^(?:(image|video)\/[a-z0-9.+-]+|application\/octet-stream)$/i),
   sizeBytes: z.number().int().positive(),
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),

@@ -1,4 +1,4 @@
-import { AlertTriangle, ExternalLink, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, ExternalLink, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { PlatformBadge } from "../components/PlatformBadge";
@@ -85,28 +85,6 @@ export function FailedPage() {
     }
   }
 
-  async function deleteMedia(item: FailedItem) {
-    if (!session || !item.mediaIds?.length) return;
-    if (
-      !window.confirm("Permanently delete the retained source media from R2?")
-    )
-      return;
-    try {
-      for (const mediaId of item.mediaIds)
-        await apiRequest(`/api/media/${mediaId}`, session, {
-          method: "DELETE",
-        });
-      setMessage("Retained source media deleted. Post metadata was kept.");
-      setLiveItems((current) => current.filter((row) => row.id !== item.id));
-    } catch (reason) {
-      setMessage(
-        reason instanceof Error
-          ? reason.message
-          : "Media could not be deleted.",
-      );
-    }
-  }
-
   async function resolveAmbiguity(
     item: FailedItem,
     outcome: "published" | "failed",
@@ -155,8 +133,8 @@ export function FailedPage() {
         <div>
           <strong>Failed source media is retained</strong>
           <p>
-            It will not be deleted automatically. Resolve, retry, or delete it
-            manually to avoid ongoing R2 storage use.
+            It will not be deleted automatically or while any target is failed,
+            incomplete, or ambiguous. Resolve the publishing outcome first.
           </p>
         </div>
       </section>
@@ -232,16 +210,6 @@ export function FailedPage() {
                 >
                   <RefreshCw size={16} />{" "}
                   {retried.includes(item.id) ? "Retry queued" : "Manual retry"}
-                </button>
-              )}
-              {item.status !== "needs_review" && (
-                <button
-                  className="icon-button danger"
-                  aria-label="Delete retained media"
-                  onClick={() => void deleteMedia(item)}
-                  disabled={demoMode}
-                >
-                  <Trash2 size={16} />
                 </button>
               )}
             </div>

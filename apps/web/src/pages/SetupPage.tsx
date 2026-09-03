@@ -96,23 +96,11 @@ export function SetupPage() {
         ),
       },
       {
-        title: "Cloudflare Worker, Queue & R2",
-        detail: hasKeys(
-          "CLOUDFLARE_ACCOUNT_ID",
-          "R2_BUCKET_NAME",
-          "R2_ACCESS_KEY_ID",
-          "R2_SECRET_ACCESS_KEY",
-          "R2_PUBLIC_DELIVERY_HOST",
-        )
-          ? "Delivery configuration present · verify deployed bindings"
-          : "R2 credentials or private delivery hostname still required",
-        ready: hasKeys(
-          "CLOUDFLARE_ACCOUNT_ID",
-          "R2_BUCKET_NAME",
-          "R2_ACCESS_KEY_ID",
-          "R2_SECRET_ACCESS_KEY",
-          "R2_PUBLIC_DELIVERY_HOST",
-        ),
+        title: "Cloudflare Worker, Queue & UploadThing",
+        detail: hasKeys("WORKER_PUBLIC_URL", "UPLOADTHING_TOKEN")
+          ? "Worker URL and UploadThing server token are present"
+          : "Worker URL or UploadThing server token still required",
+        ready: hasKeys("WORKER_PUBLIC_URL", "UPLOADTHING_TOKEN"),
       },
       {
         title: "Resend failure notifications",
@@ -227,7 +215,7 @@ export function SetupPage() {
                 ? `${missing.length} required setting${missing.length === 1 ? " is" : "s are"} missing. Run the doctor for names and format checks.`
                 : "Required settings are present. Run the doctor for format and connectivity checks."}
             </p>
-            <code>pnpm setup-doctor</code>
+            <code>corepack pnpm setup-doctor</code>
           </div>
         </section>
         <section className="panel compact-panel warning-panel">

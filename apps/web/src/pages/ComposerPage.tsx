@@ -478,7 +478,7 @@ export function ComposerPage() {
                     <strong>{upload.name}</strong>
                     <small>
                       {upload.progress === 100
-                        ? "Ready · private R2 object"
+                        ? "Ready · server-confirmed UploadThing file"
                         : upload.progress === 0
                           ? "Upload failed"
                           : `Uploading ${upload.progress}%`}

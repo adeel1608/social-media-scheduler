@@ -1,8 +1,10 @@
+import { uploadThingAppId } from "./storage";
+
 export interface Env {
-  MEDIA_BUCKET: R2Bucket;
   PUBLISH_QUEUE: Queue<QueueJob>;
   ENVIRONMENT: string;
   APP_URL: string;
+  WORKER_PUBLIC_URL: string;
   OWNER_EMAIL: string;
   NOTIFICATION_EMAIL: string;
   TIMEZONE: string;
@@ -12,11 +14,7 @@ export interface Env {
   SUPABASE_SERVICE_ROLE_KEY: string;
   TOKEN_ENCRYPTION_KEY: string;
   TOKEN_ENCRYPTION_KEY_VERSION: string;
-  CLOUDFLARE_ACCOUNT_ID: string;
-  R2_BUCKET_NAME: string;
-  R2_ACCESS_KEY_ID: string;
-  R2_SECRET_ACCESS_KEY: string;
-  R2_PUBLIC_DELIVERY_HOST: string;
+  UPLOADTHING_TOKEN: string;
   RESEND_API_KEY: string;
   RESEND_FROM: string;
   META_APP_ID: string;
@@ -41,9 +39,9 @@ export interface QueueJob {
 }
 
 export const requiredProductionEnv: Array<keyof Env> = [
-  "MEDIA_BUCKET",
   "PUBLISH_QUEUE",
   "APP_URL",
+  "WORKER_PUBLIC_URL",
   "OWNER_EMAIL",
   "NOTIFICATION_EMAIL",
   "TIMEZONE",
@@ -51,11 +49,7 @@ export const requiredProductionEnv: Array<keyof Env> = [
   "SUPABASE_ANON_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
   "TOKEN_ENCRYPTION_KEY",
-  "CLOUDFLARE_ACCOUNT_ID",
-  "R2_BUCKET_NAME",
-  "R2_ACCESS_KEY_ID",
-  "R2_SECRET_ACCESS_KEY",
-  "R2_PUBLIC_DELIVERY_HOST",
+  "UPLOADTHING_TOKEN",
   "RESEND_API_KEY",
   "RESEND_FROM",
   "META_APP_ID",
@@ -96,10 +90,17 @@ export function configurationStatus(env: Env) {
       invalid.push("TOKEN_ENCRYPTION_KEY");
     }
   }
+  if (env.UPLOADTHING_TOKEN) {
+    try {
+      uploadThingAppId(env.UPLOADTHING_TOKEN);
+    } catch {
+      invalid.push("UPLOADTHING_TOKEN");
+    }
+  }
   for (const key of [
     "APP_URL",
+    "WORKER_PUBLIC_URL",
     "SUPABASE_URL",
-    "R2_PUBLIC_DELIVERY_HOST",
     "META_REDIRECT_URI",
     "TIKTOK_REDIRECT_URI",
     "GOOGLE_REDIRECT_URI",
@@ -113,8 +114,13 @@ export function configurationStatus(env: Env) {
         (url.hostname === "localhost" || url.hostname === "127.0.0.1");
       if (url.protocol !== "https:" && !localHttp) invalid.push(key);
       if (
-        key === "R2_PUBLIC_DELIVERY_HOST" &&
-        (url.pathname !== "/" || url.search || url.hash)
+        key === "WORKER_PUBLIC_URL" &&
+        (url.pathname !== "/" ||
+          url.search ||
+          url.hash ||
+          url.username ||
+          url.password ||
+          url.port)
       )
         invalid.push(key);
     } catch {

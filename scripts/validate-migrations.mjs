@@ -40,6 +40,14 @@ const requirements = {
   ),
   "manual retry": sql.includes("function public.begin_manual_retry"),
   "server pagination indexes": sql.includes("post_targets_owner_status_idx"),
+  "atomic UploadThing quota reservation":
+    sql.includes("function public.reserve_uploadthing_media") &&
+    sql.includes("active_media_limit constant bigint := 1932735283") &&
+    sql.includes("from public.installation_settings settings") &&
+    sql.includes("for update"),
+  "idempotent UploadThing completion":
+    sql.includes("function public.complete_uploadthing_media") &&
+    sql.includes("return 'already_complete'"),
 };
 if (missingTables.length || Object.values(requirements).includes(false)) {
   console.error({ missingTables, requirements });
