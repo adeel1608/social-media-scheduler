@@ -1,9 +1,15 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 
-export default defineConfig({
-  plugins: [react()],
-  server: { port: 5173, strictPort: true },
-  preview: { port: 4173, strictPort: true },
-  build: { sourcemap: true },
+import { resolvePublicIdentity } from "./src/lib/publicIdentity.ts";
+
+export default defineConfig(({ mode }) => {
+  resolvePublicIdentity({ ...loadEnv(mode, process.cwd()), MODE: mode });
+
+  return {
+    plugins: [react()],
+    server: { port: 5173, strictPort: true },
+    preview: { port: 4173, strictPort: true },
+    build: { sourcemap: true },
+  };
 });
