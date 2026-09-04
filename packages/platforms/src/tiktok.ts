@@ -378,7 +378,6 @@ export class TikTokAdapter implements PlatformAdapter {
               auto_add_music: metadata.autoAddMusic ?? false,
               brand_content_toggle: metadata.brandedContent,
               brand_organic_toggle: metadata.yourBrand,
-              is_aigc: metadata.aiGenerated,
             },
             source_info: {
               source: "PULL_FROM_URL",
@@ -387,6 +386,7 @@ export class TikTokAdapter implements PlatformAdapter {
             },
             post_mode: "DIRECT_POST",
             media_type: "PHOTO",
+            is_aigc: metadata.aiGenerated,
           }),
         },
       );

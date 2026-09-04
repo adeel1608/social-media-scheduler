@@ -275,6 +275,72 @@ describe("official API adapters", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("sends TikTok photo AI disclosure at the documented top level", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: {
+              privacy_level_options: ["SELF_ONLY"],
+              max_video_post_duration_sec: 120,
+              comment_disabled: false,
+              duet_disabled: false,
+              stitch_disabled: false,
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: { publish_id: "photo-publish-id" },
+            error: { code: "ok" },
+          }),
+          { status: 200 },
+        ),
+      );
+    const adapter = new TikTokAdapter(
+      {
+        clientKey: "key",
+        clientSecret: "secret",
+        contentPostingAudited: false,
+      },
+      fetcher,
+    );
+    const result = await adapter.publish({
+      accountId: "u",
+      accessToken: "t",
+      idempotencyKey: "k",
+      metadata: {
+        title: "Photo",
+        description: "Description",
+        contentType: "photo",
+        privacyLevel: "SELF_ONLY",
+        disableComment: false,
+        disableDuet: true,
+        disableStitch: true,
+        commercialContent: false,
+        yourBrand: false,
+        brandedContent: false,
+        aiGenerated: true,
+      },
+      media: [image],
+      deliveryUrls: ["https://media.test/photo"],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "processing",
+      statusHandle: "photo-publish-id",
+    });
+    const payload = JSON.parse(
+      String(fetcher.mock.calls[1]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(payload).toMatchObject({ is_aigc: true });
+    expect(payload.post_info).not.toHaveProperty("is_aigc");
+  });
+
   it("blocks public YouTube upload before API audit", async () => {
     const adapter = new YouTubeAdapter({
       clientId: "id",
