@@ -140,6 +140,141 @@ describe("official API adapters", () => {
     });
   });
 
+  it("requires video duration before scheduling a TikTok post", () => {
+    const adapter = new TikTokAdapter({
+      clientKey: "key",
+      clientSecret: "secret",
+      contentPostingAudited: false,
+    });
+    const result = adapter.validatePost(
+      {
+        title: "Video",
+        contentType: "video",
+        privacyLevel: "SELF_ONLY",
+        disableComment: true,
+        disableDuet: true,
+        disableStitch: true,
+        commercialContent: false,
+        yourBrand: false,
+        brandedContent: false,
+        aiGenerated: false,
+      },
+      [video],
+    );
+
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ message: expect.stringContaining("duration") }),
+    );
+  });
+
+  it("enforces the latest TikTok creator duration limit before upload", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            privacy_level_options: ["SELF_ONLY"],
+            max_video_post_duration_sec: 60,
+            comment_disabled: false,
+            duet_disabled: false,
+            stitch_disabled: false,
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const adapter = new TikTokAdapter(
+      {
+        clientKey: "key",
+        clientSecret: "secret",
+        contentPostingAudited: false,
+      },
+      fetcher,
+    );
+    const result = await adapter.publish({
+      accountId: "u",
+      accessToken: "t",
+      idempotencyKey: "k",
+      metadata: {
+        title: "Video",
+        contentType: "video",
+        privacyLevel: "SELF_ONLY",
+        disableComment: false,
+        disableDuet: false,
+        disableStitch: false,
+        commercialContent: false,
+        yourBrand: false,
+        brandedContent: false,
+        aiGenerated: false,
+      },
+      media: [{ ...video, durationSeconds: 61 }],
+      deliveryUrls: ["https://media.test/v"],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "failed",
+      sanitizedResponse: {
+        blocked: "creator_restriction",
+        field: "media",
+      },
+      error: { code: "creator_restriction" },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("enforces disabled TikTok creator interactions before upload", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            privacy_level_options: ["SELF_ONLY"],
+            max_video_post_duration_sec: 120,
+            comment_disabled: true,
+            duet_disabled: false,
+            stitch_disabled: false,
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const adapter = new TikTokAdapter(
+      {
+        clientKey: "key",
+        clientSecret: "secret",
+        contentPostingAudited: false,
+      },
+      fetcher,
+    );
+    const result = await adapter.publish({
+      accountId: "u",
+      accessToken: "t",
+      idempotencyKey: "k",
+      metadata: {
+        title: "Video",
+        contentType: "video",
+        privacyLevel: "SELF_ONLY",
+        disableComment: false,
+        disableDuet: false,
+        disableStitch: false,
+        commercialContent: false,
+        yourBrand: false,
+        brandedContent: false,
+        aiGenerated: false,
+      },
+      media: [{ ...video, durationSeconds: 30 }],
+      deliveryUrls: ["https://media.test/v"],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "failed",
+      sanitizedResponse: {
+        blocked: "creator_restriction",
+        field: "disableComment",
+      },
+      error: { code: "creator_restriction" },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks public YouTube upload before API audit", async () => {
     const adapter = new YouTubeAdapter({
       clientId: "id",
