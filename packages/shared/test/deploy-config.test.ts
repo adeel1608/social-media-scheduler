@@ -7,7 +7,7 @@ const validEnvironment = {
   CLOUDFLARE_PAGES_PROJECT: "postline-owner",
   CLOUDFLARE_WORKER_NAME: "postline-owner-api",
   CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
-  CLOUDFLARE_API_TOKEN: "cloudflare-token-sentinel-1234567890",
+  CLOUDFLARE_API_TOKEN: "POSTLINE_TEST_CLOUDFLARE_TOKEN_SENTINEL",
   VITE_APP_URL: "https://postline-owner.pages.dev",
   VITE_API_URL: "https://postline-owner.workers.dev",
   VITE_SUPABASE_URL: "https://owner-project.supabase.co",
