@@ -79,7 +79,15 @@ export function uploadThingAppId(token: string): string {
       typeof payload.appId !== "string" ||
       !/^[a-zA-Z0-9_-]{3,128}$/.test(payload.appId) ||
       typeof payload.apiKey !== "string" ||
-      !Array.isArray(payload.regions)
+      payload.apiKey.length < 8 ||
+      payload.apiKey.length > 4_096 ||
+      /\s/.test(payload.apiKey) ||
+      !Array.isArray(payload.regions) ||
+      payload.regions.length === 0 ||
+      !payload.regions.every(
+        (region) =>
+          typeof region === "string" && /^[a-z0-9-]{2,32}$/i.test(region),
+      )
     ) {
       throw new Error("Unexpected token payload");
     }

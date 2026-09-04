@@ -140,6 +140,207 @@ describe("official API adapters", () => {
     });
   });
 
+  it("requires video duration before scheduling a TikTok post", () => {
+    const adapter = new TikTokAdapter({
+      clientKey: "key",
+      clientSecret: "secret",
+      contentPostingAudited: false,
+    });
+    const result = adapter.validatePost(
+      {
+        title: "Video",
+        contentType: "video",
+        privacyLevel: "SELF_ONLY",
+        disableComment: true,
+        disableDuet: true,
+        disableStitch: true,
+        commercialContent: false,
+        yourBrand: false,
+        brandedContent: false,
+        aiGenerated: false,
+      },
+      [video],
+    );
+
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ message: expect.stringContaining("duration") }),
+    );
+  });
+
+  it("enforces the latest TikTok creator duration limit before upload", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            privacy_level_options: ["SELF_ONLY"],
+            max_video_post_duration_sec: 60,
+            comment_disabled: false,
+            duet_disabled: false,
+            stitch_disabled: false,
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const adapter = new TikTokAdapter(
+      {
+        clientKey: "key",
+        clientSecret: "secret",
+        contentPostingAudited: false,
+      },
+      fetcher,
+    );
+    const result = await adapter.publish({
+      accountId: "u",
+      accessToken: "t",
+      idempotencyKey: "k",
+      metadata: {
+        title: "Video",
+        contentType: "video",
+        privacyLevel: "SELF_ONLY",
+        disableComment: false,
+        disableDuet: false,
+        disableStitch: false,
+        commercialContent: false,
+        yourBrand: false,
+        brandedContent: false,
+        aiGenerated: false,
+      },
+      media: [{ ...video, durationSeconds: 61 }],
+      deliveryUrls: ["https://media.test/v"],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "failed",
+      sanitizedResponse: {
+        blocked: "creator_restriction",
+        field: "media",
+      },
+      error: { code: "creator_restriction" },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("enforces disabled TikTok creator interactions before upload", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            privacy_level_options: ["SELF_ONLY"],
+            max_video_post_duration_sec: 120,
+            comment_disabled: true,
+            duet_disabled: false,
+            stitch_disabled: false,
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const adapter = new TikTokAdapter(
+      {
+        clientKey: "key",
+        clientSecret: "secret",
+        contentPostingAudited: false,
+      },
+      fetcher,
+    );
+    const result = await adapter.publish({
+      accountId: "u",
+      accessToken: "t",
+      idempotencyKey: "k",
+      metadata: {
+        title: "Video",
+        contentType: "video",
+        privacyLevel: "SELF_ONLY",
+        disableComment: false,
+        disableDuet: false,
+        disableStitch: false,
+        commercialContent: false,
+        yourBrand: false,
+        brandedContent: false,
+        aiGenerated: false,
+      },
+      media: [{ ...video, durationSeconds: 30 }],
+      deliveryUrls: ["https://media.test/v"],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "failed",
+      sanitizedResponse: {
+        blocked: "creator_restriction",
+        field: "disableComment",
+      },
+      error: { code: "creator_restriction" },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends TikTok photo AI disclosure at the documented top level", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: {
+              privacy_level_options: ["SELF_ONLY"],
+              max_video_post_duration_sec: 120,
+              comment_disabled: false,
+              duet_disabled: false,
+              stitch_disabled: false,
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: { publish_id: "photo-publish-id" },
+            error: { code: "ok" },
+          }),
+          { status: 200 },
+        ),
+      );
+    const adapter = new TikTokAdapter(
+      {
+        clientKey: "key",
+        clientSecret: "secret",
+        contentPostingAudited: false,
+      },
+      fetcher,
+    );
+    const result = await adapter.publish({
+      accountId: "u",
+      accessToken: "t",
+      idempotencyKey: "k",
+      metadata: {
+        title: "Photo",
+        description: "Description",
+        contentType: "photo",
+        privacyLevel: "SELF_ONLY",
+        disableComment: false,
+        disableDuet: true,
+        disableStitch: true,
+        commercialContent: false,
+        yourBrand: false,
+        brandedContent: false,
+        aiGenerated: true,
+      },
+      media: [image],
+      deliveryUrls: ["https://media.test/photo"],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "processing",
+      statusHandle: "photo-publish-id",
+    });
+    const payload = JSON.parse(
+      String(fetcher.mock.calls[1]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(payload).toMatchObject({ is_aigc: true });
+    expect(payload.post_info).not.toHaveProperty("is_aigc");
+  });
+
   it("blocks public YouTube upload before API audit", async () => {
     const adapter = new YouTubeAdapter({
       clientId: "id",
@@ -197,7 +398,10 @@ describe("official API adapters", () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(null, {
         status: 200,
-        headers: { Location: "https://upload.youtube.test/session" },
+        headers: {
+          Location:
+            "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&upload_id=session",
+        },
       }),
     );
     const adapter = new YouTubeAdapter(
@@ -222,7 +426,7 @@ describe("official API adapters", () => {
       deliveryUrls: [],
     });
     expect(result.uploadSession).toMatchObject({
-      url: "https://upload.youtube.test/session",
+      url: "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&upload_id=session",
       nextByte: 0,
       totalBytes: video.sizeBytes,
     });

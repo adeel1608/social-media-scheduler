@@ -5,7 +5,11 @@ import {
   type YouTubeMetadata,
 } from "@scheduler/shared";
 
-import { genericNormalizeError, jsonRequest } from "./http";
+import {
+  genericNormalizeError,
+  jsonRequest,
+  trustedUploadSessionUrl,
+} from "./http";
 import type {
   AccountProfile,
   AnalyticsRequest,
@@ -291,10 +295,11 @@ export class YouTubeAdapter implements PlatformAdapter {
     const sessionUrl = response.headers.get("Location");
     if (!sessionUrl)
       throw new Error("YouTube did not return a resumable upload location");
+    const trustedSessionUrl = trustedUploadSessionUrl("youtube", sessionUrl);
     return {
       outcome: "processing" as const,
       uploadSession: {
-        url: sessionUrl,
+        url: trustedSessionUrl,
         nextByte: 0,
         totalBytes: source.sizeBytes,
         chunkSize: Math.min(source.sizeBytes, 8 * 1024 * 1024),
@@ -308,35 +313,8 @@ export class YouTubeAdapter implements PlatformAdapter {
   }
 
   async getPublishStatus(accessToken: string, statusHandle: string) {
-    if (statusHandle.startsWith("https://")) {
-      const response = await this.fetcher(statusHandle, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Range": "bytes */*",
-        },
-      });
-      if (response.status === 308) {
-        return {
-          outcome: "processing" as const,
-          statusHandle,
-          sanitizedResponse: { range: response.headers.get("Range") },
-        };
-      }
-      if (response.ok) {
-        const data = (await response.json()) as { id: string };
-        return {
-          outcome: "published" as const,
-          remoteContentId: data.id,
-          remoteUrl: `https://youtu.be/${data.id}`,
-          sanitizedResponse: { id: data.id },
-        };
-      }
-      throw {
-        status: response.status,
-        body: { message: await response.text() },
-      };
-    }
+    if (!/^[a-zA-Z0-9_-]{6,64}$/.test(statusHandle))
+      throw new Error("YouTube status handle is invalid");
     const result = await jsonRequest<{
       items: Array<{
         id: string;

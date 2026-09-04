@@ -1,6 +1,39 @@
-import { redactSecrets } from "@scheduler/shared";
+import { redactSecrets, type Platform } from "@scheduler/shared";
 
 import type { Fetch, PlatformError } from "./types";
+
+export function trustedUploadSessionUrl(
+  platform: Platform,
+  value: string,
+): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("Provider upload session URL is invalid");
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.hash
+  ) {
+    throw new Error("Provider upload session URL is invalid");
+  }
+  const trusted =
+    platform === "youtube"
+      ? url.hostname === "www.googleapis.com" &&
+        url.pathname === "/upload/youtube/v3/videos" &&
+        url.searchParams.get("uploadType") === "resumable" &&
+        Boolean(url.searchParams.get("upload_id"))
+      : platform === "tiktok"
+        ? url.hostname === "open-upload.tiktokapis.com" &&
+          /^\/(?:upload|video)\/$/.test(url.pathname)
+        : false;
+  if (!trusted) throw new Error("Provider upload session URL is not trusted");
+  return url.href;
+}
 
 export async function jsonRequest<T>(
   fetcher: Fetch,

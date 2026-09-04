@@ -91,6 +91,14 @@ app.onError((_error, c) => {
 app.get("/health", (c) => {
   const status = configurationStatus(c.env);
   const healthy = c.env.ENVIRONMENT === "development" || status.configured;
+  if (!healthy) {
+    const requestId = c.req.header("CF-Ray");
+    logWorkerError("configuration_incomplete", {
+      ...(requestId ? { requestId } : {}),
+      missingKeys: status.missing,
+      invalidKeys: status.invalid,
+    });
+  }
   return c.json(
     {
       status: healthy ? "ok" : "configuration_required",

@@ -50,6 +50,14 @@ const requirements = {
   "idempotent UploadThing completion":
     sql.includes("function public.complete_uploadthing_media") &&
     sql.includes("return 'already_complete'"),
+  "qualified audit digest": sql.includes(
+    "encode(extensions.digest(owner_email, 'sha256'), 'hex')",
+  ),
+  "automatic RLS helper RPC access revoked":
+    sql.includes("to_regprocedure('public.rls_auto_enable()')") &&
+    sql.includes(
+      "revoke all on function public.rls_auto_enable() from public, anon, authenticated",
+    ),
 };
 if (missingTables.length || Object.values(requirements).includes(false)) {
   console.error({ missingTables, requirements });

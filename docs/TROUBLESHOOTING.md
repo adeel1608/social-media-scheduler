@@ -48,6 +48,18 @@ Inspect `email_events.deduplication_key`, its unique constraint and the attempt 
 
 Failed, ambiguous, incomplete, and pending items retain media by design. Resolve them before deletion. Confirm successful targets have `published_at`, every selected target is published, the seven-day retention has passed, and cron is running. The storage panel separates active provider bytes from reservations. An expired reservation remains counted until UploadThing deletion/absence is confirmed; repeated failures record a deletion error for later safe retry.
 
+## Worker health returns `configuration_required`
+
+`/health` deliberately omits missing or invalid key names. Start a sanitized
+production tail with
+`corepack pnpm --dir apps/worker exec wrangler tail social-media-scheduler-api --format pretty --search configuration_incomplete`,
+request `/health` once, and inspect only the logged `missingKeys` and
+`invalidKeys` arrays. Those arrays are restricted to known binding names and
+never include values. Confirm names separately with `wrangler versions view`,
+correct only the reported values through Wrangler's hidden prompt, and inspect
+the resulting inactive version before changing traffic. Never paste a value
+into logs, shell history, chat, screenshots, commits, or issues.
+
 ## Cron or queue does not run
 
 Cloudflare Cron is UTC. Confirm `* * * * *` under Worker → Settings → Triggers and the correct queue bindings. Inspect sanitized Worker logs. The consumer is configured with zero automatic retries, so application failures appear in Postline instead of redelivery loops.

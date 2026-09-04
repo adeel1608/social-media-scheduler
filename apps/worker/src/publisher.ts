@@ -5,6 +5,7 @@ import {
   type Platform,
   type PublishResult,
 } from "@scheduler/shared";
+import { trustedUploadSessionUrl } from "@scheduler/platforms";
 
 import { adapterFor } from "./adapters";
 import { SupabaseRest } from "./database";
@@ -47,6 +48,28 @@ interface TargetRecord {
       };
     }>;
   };
+}
+
+export function acceptedUploadByte(
+  platform: Platform,
+  response: Response,
+  requestedEndExclusive: number,
+): number {
+  if (platform !== "youtube" || response.status !== 308) {
+    return requestedEndExclusive;
+  }
+  const range = response.headers.get("Range");
+  if (!range) return 0;
+  const match = /^bytes=0-(\d+)$/.exec(range);
+  const nextByte = match ? Number(match[1]) + 1 : Number.NaN;
+  if (
+    !Number.isSafeInteger(nextByte) ||
+    nextByte < 0 ||
+    nextByte > requestedEndExclusive
+  ) {
+    throw new Error("Provider returned an invalid resumable upload range");
+  }
+  return nextByte;
 }
 
 async function loadTarget(
@@ -580,6 +603,7 @@ async function continueUpload(
     },
     env.TOKEN_ENCRYPTION_KEY,
   );
+  const trustedUrl = trustedUploadSessionUrl(target.platform, url);
   const start = Number(state.nextByte);
   const endExclusive = Math.min(
     start + Number(state.chunkSize),
@@ -596,8 +620,9 @@ async function continueUpload(
   );
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(trustedUrl, {
       method: "PUT",
+      redirect: "manual",
       headers: {
         ...(target.platform === "youtube"
           ? { Authorization: `Bearer ${accessToken}` }
@@ -616,13 +641,20 @@ async function continueUpload(
       ambiguous: true,
     };
   }
-  const accepted = response.ok || response.status === 308;
+  const accepted =
+    response.ok || (target.platform === "youtube" && response.status === 308);
   if (!accepted)
     throw {
       status: response.status,
       body: { message: (await response.text()).slice(0, 500) },
     };
-  const nextByte = endExclusive;
+  const nextByte = acceptedUploadByte(target.platform, response, endExclusive);
+  if (nextByte === start) {
+    throw {
+      status: 503,
+      body: { message: "Resumable upload made no progress" },
+    };
+  }
   if (nextByte < Number(state.totalBytes)) {
     await db.update(`post_targets?id=eq.${target.id}`, {
       platform_upload_state: { ...state, nextByte, uploadRetryCount: 0 },

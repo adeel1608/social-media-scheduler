@@ -5,7 +5,11 @@ import {
   type TikTokMetadata,
 } from "@scheduler/shared";
 
-import { genericNormalizeError, jsonRequest } from "./http";
+import {
+  genericNormalizeError,
+  jsonRequest,
+  trustedUploadSessionUrl,
+} from "./http";
 import type {
   AccountProfile,
   AnalyticsRequest,
@@ -197,6 +201,16 @@ export class TikTokAdapter implements PlatformAdapter {
         });
       }
       if (
+        item.mimeType.startsWith("video/") &&
+        (!item.durationSeconds || !Number.isFinite(item.durationSeconds))
+      ) {
+        errors.push({
+          field: "media",
+          message:
+            "TikTok video duration is required so creator limits can be enforced.",
+        });
+      }
+      if (
         item.mimeType.startsWith("image/") &&
         item.sizeBytes > 20 * 1024 * 1024
       ) {
@@ -252,7 +266,15 @@ export class TikTokAdapter implements PlatformAdapter {
   }
 
   private async creatorInfo(accessToken: string) {
-    return jsonRequest<{ data: { privacy_level_options: string[] } }>(
+    return jsonRequest<{
+      data: {
+        privacy_level_options: string[];
+        max_video_post_duration_sec: number;
+        comment_disabled: boolean;
+        duet_disabled: boolean;
+        stitch_disabled: boolean;
+      };
+    }>(
       this.fetcher,
       "https://open.tiktokapis.com/v2/post/publish/creator_info/query/",
       {
@@ -296,6 +318,47 @@ export class TikTokAdapter implements PlatformAdapter {
         },
       };
     }
+    const creatorRestriction = (field: string, message: string) => ({
+      outcome: "failed" as const,
+      sanitizedResponse: { blocked: "creator_restriction", field },
+      error: {
+        code: "creator_restriction",
+        message,
+        retryable: false,
+      },
+    });
+    if (creator.data.comment_disabled && !metadata.disableComment) {
+      return creatorRestriction(
+        "disableComment",
+        "The creator account currently requires comments to be disabled.",
+      );
+    }
+    if (metadata.contentType === "video") {
+      if (creator.data.duet_disabled && !metadata.disableDuet) {
+        return creatorRestriction(
+          "disableDuet",
+          "The creator account currently requires duets to be disabled.",
+        );
+      }
+      if (creator.data.stitch_disabled && !metadata.disableStitch) {
+        return creatorRestriction(
+          "disableStitch",
+          "The creator account currently requires stitches to be disabled.",
+        );
+      }
+      const duration = input.media[0]?.durationSeconds;
+      if (
+        !Number.isFinite(creator.data.max_video_post_duration_sec) ||
+        creator.data.max_video_post_duration_sec <= 0 ||
+        !duration ||
+        duration > creator.data.max_video_post_duration_sec
+      ) {
+        return creatorRestriction(
+          "media",
+          "The video duration exceeds, or cannot be checked against, the creator account's current limit.",
+        );
+      }
+    }
     const headers = {
       Authorization: `Bearer ${input.accessToken}`,
       "Content-Type": "application/json; charset=UTF-8",
@@ -319,7 +382,6 @@ export class TikTokAdapter implements PlatformAdapter {
               auto_add_music: metadata.autoAddMusic ?? false,
               brand_content_toggle: metadata.brandedContent,
               brand_organic_toggle: metadata.yourBrand,
-              is_aigc: metadata.aiGenerated,
             },
             source_info: {
               source: "PULL_FROM_URL",
@@ -328,6 +390,7 @@ export class TikTokAdapter implements PlatformAdapter {
             },
             post_mode: "DIRECT_POST",
             media_type: "PHOTO",
+            is_aigc: metadata.aiGenerated,
           }),
         },
       );
@@ -368,11 +431,12 @@ export class TikTokAdapter implements PlatformAdapter {
         }),
       },
     );
+    const uploadUrl = trustedUploadSessionUrl("tiktok", result.data.upload_url);
     return {
       outcome: "processing" as const,
       statusHandle: result.data.publish_id,
       uploadSession: {
-        url: result.data.upload_url,
+        url: uploadUrl,
         nextByte: 0,
         totalBytes: source.sizeBytes,
         chunkSize,
