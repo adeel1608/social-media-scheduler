@@ -88,6 +88,8 @@ app.onError((_error, c) => {
   );
 });
 
+app.get("/", (c) => c.json({ service: "Postline API", status: "ok" }));
+
 app.get("/health", (c) => {
   const status = configurationStatus(c.env);
   const healthy = c.env.ENVIRONMENT === "development" || status.configured;
