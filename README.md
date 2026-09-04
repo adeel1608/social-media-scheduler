@@ -4,7 +4,7 @@ Postline is an open-source, self-hosted scheduler for one owner to prepare, sche
 
 It is not a centrally hosted SaaS. Each person clones and deploys a separate private instance with their own Supabase, Cloudflare, UploadThing, Resend, Meta, TikTok, and Google credentials.
 
-> Status: the application, official-API adapters, migrations, security controls, tests, and deployment configuration are implemented and mock-tested. No platform connection or real publication was live-tested in this repository. Public posting remains deliberately blocked until the relevant provider approvals and `LIVE_TEST_CONFIRM=true` are configured.
+> Status: the application, official-API adapters, migrations, security controls, tests, and deployment configuration are implemented and mock-tested. In Adeel's owner deployment, Supabase migration 003 is applied, but the frontend is undeployed and only an inert HTTP-503 Worker bootstrap serves traffic; the real Worker version remains inactive. Authentication/RLS has not been live-tested end to end, and no social-platform connection or publication has been live-verified. Public posting remains deliberately blocked until the relevant provider approvals and `LIVE_TEST_CONFIRM=true` are configured.
 
 ![Postline analytics dashboard](docs/screenshots/dashboard.png)
 
@@ -20,7 +20,7 @@ It is not a centrally hosted SaaS. Each person clones and deploys a separate pri
 - Deduplicated Resend email for failures and ambiguous outcomes—never for success.
 - Server-paginated and browser-virtualized queues with no application-level record cap.
 - Historical analytics snapshots, raw provider names, comparable metrics, trends, filters, and honest unavailable values.
-- Desktop-first composer, queue, calendar, history, failures, account setup, settings, and customizable legal templates.
+- Desktop-first composer, queue, calendar, history, failures, account setup, settings, and configurable public legal policies.
 
 ## Supported formats
 
@@ -66,6 +66,11 @@ corepack pnpm dev
 
 `.env.example` enables an explicitly labelled local UI demonstration. It cannot contact real platform APIs or report fake publications. Set `VITE_DEMO_MODE=false` and configure Supabase and the Worker for an authenticated integration environment.
 
+Production builds also require the browser-safe `VITE_OPERATOR_NAME` and
+`VITE_PUBLIC_CONTACT_EMAIL` values used on the public legal pages. Missing or
+placeholder values fail the build when demo mode is off. Never put a server
+secret in any `VITE_` variable.
+
 Run the Worker separately:
 
 ```bash
@@ -99,15 +104,18 @@ Source media is eligible for deletion seven days after every target succeeds. An
 
 ## Honest verification status
 
-| Surface                                                   | Implemented | Mock-tested               | Live-verified         |
-| --------------------------------------------------------- | ----------- | ------------------------- | --------------------- |
-| Instagram OAuth/publishing/status/analytics               | Yes         | Yes                       | No                    |
-| TikTok OAuth/video/photo/status/analytics                 | Yes         | Yes                       | No                    |
-| YouTube OAuth/resumable upload/status/thumbnail/analytics | Yes         | Yes                       | No                    |
-| Supabase Auth/Postgres/RLS                                | Yes         | Migration/static tests    | No remote project     |
-| Cloudflare Worker/Cron/Queue                              | Yes         | Dry-run build/local logic | No deployment         |
-| UploadThing direct upload/storage/deletion                | Yes         | SDK integration mocks     | No provider token     |
-| Resend failure email                                      | Yes         | Deduplication/logic tests | No sender credentials |
+| Surface                                  | Source-code/mock verification                     | Adeel owner deployment (4 September 2026)                                        |
+| ---------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Instagram, TikTok, and YouTube adapters  | Implemented and mock-tested                       | No live connection or publication verified                                       |
+| Supabase database schema                 | Ordered migrations and static validation          | Migration 003 applied                                                            |
+| Supabase authentication and RLS behavior | Implemented and covered by migration/static tests | Not live-tested end to end                                                       |
+| Cloudflare Worker, Cron, and Queues      | Worker dry-run and local logic verified           | Queues exist; safe HTTP-503 bootstrap is active; real Worker version is inactive |
+| React/Vite frontend                      | Production build and browser E2E verified         | Pages URL reserved; production frontend undeployed                               |
+| UploadThing media operations             | SDK integration mock-tested                       | No live storage workflow verified                                                |
+| Resend failure email                     | Deduplication and delivery logic mock-tested      | No live sender delivery verified                                                 |
+
+The deployment column records one maintainer installation, not the state of a
+new clone. Source/mock results do not represent live provider verification.
 
 Mocks are injected only in tests. Production configuration fails closed and never activates mock publishing.
 
@@ -118,7 +126,7 @@ corepack pnpm format:check
 corepack pnpm lint
 corepack pnpm typecheck
 corepack pnpm test
-corepack pnpm build
+corepack pnpm build:verify
 corepack pnpm db:validate
 corepack pnpm test:e2e
 corepack pnpm audit --audit-level high
@@ -131,7 +139,10 @@ Live integration tests are intentionally absent from the default test command an
 
 Review [SECURITY.md](SECURITY.md) before deployment. Never bypass app review, quotas, account restrictions, or public-visibility restrictions. Postline uses official APIs only—no passwords, scraping, Selenium, or browser automation for social publishing.
 
-Customizable templates (not legal advice) are available at `/privacy`, `/terms`, and `/data-deletion`.
+Public policies are available without authentication at `/privacy`, `/terms`,
+and `/data-deletion`. Installers remain responsible for reviewing their own
+deployment and obtaining legal advice where needed; the open-source project
+does not provide legal advice.
 
 ## Licence
 
