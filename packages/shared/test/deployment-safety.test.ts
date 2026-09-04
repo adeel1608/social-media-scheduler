@@ -16,6 +16,14 @@ const wrangler = readFileSync(
 );
 
 describe("production deployment safety", () => {
+  it("cancels obsolete CI runs without affecting production deployment", () => {
+    expect(ciWorkflow).toContain(
+      "group: ci-${{ github.workflow }}-${{ github.ref }}",
+    );
+    expect(ciWorkflow).toContain("cancel-in-progress: true");
+    expect(workflow).toContain("cancel-in-progress: false");
+  });
+
   it("retains manual and protected-environment release gates", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("environment: production");
