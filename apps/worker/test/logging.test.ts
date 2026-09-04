@@ -32,6 +32,21 @@ describe("sanitized Worker error logging", () => {
     expect(output).not.toContain("secret-value");
   });
 
+  it("logs only allow-listed configuration key names", () => {
+    const output = formatWorkerError("configuration_incomplete", {
+      missingKeys: ["SUPABASE_URL", "OWNER_EMAIL"],
+      invalidKeys: ["TOKEN_ENCRYPTION_KEY", "not-a-binding-value" as "APP_URL"],
+    });
+
+    expect(JSON.parse(output)).toEqual({
+      level: "error",
+      message: "configuration_incomplete",
+      missingKeys: ["SUPABASE_URL", "OWNER_EMAIL"],
+      invalidKeys: ["TOKEN_ENCRYPTION_KEY"],
+    });
+    expect(output).not.toContain("not-a-binding-value");
+  });
+
   it("writes only the formatted safe entry", () => {
     const error = vi
       .spyOn(console, "error")

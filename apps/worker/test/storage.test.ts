@@ -54,6 +54,26 @@ function media(): StoredMedia {
 }
 
 describe("UploadThing URL safety", () => {
+  it("rejects malformed token credential and region fields", () => {
+    for (const payload of [
+      { apiKey: "", appId: "postline123", regions: ["syd1"] },
+      { apiKey: "valid-api-key", appId: "postline123", regions: [] },
+      {
+        apiKey: "valid-api-key",
+        appId: "postline123",
+        regions: ["https://unexpected.example"],
+      },
+    ]) {
+      expect(() =>
+        validateUploadThingUrl(
+          { ...storageEnv(), UPLOADTHING_TOKEN: btoa(JSON.stringify(payload)) },
+          `https://postline123.ufs.sh/f/${fileKey}`,
+          [fileKey],
+        ),
+      ).toThrow(MediaStorageError);
+    }
+  });
+
   it("allows only the configured app CDN and documented legacy host", () => {
     const env = storageEnv();
     expect(
