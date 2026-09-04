@@ -40,7 +40,7 @@ Disconnect requests provider revocation where supported before encrypted credent
 
 ## Dependency and source security
 
-CI runs formatting, linting, type checking, unit/integration tests, builds, migration validation, a high-severity dependency audit, secret-pattern scan and CodeQL. Enable GitHub secret scanning and dependency alerts on the public repository.
+CI runs formatting, linting, type checking, unit/integration tests, builds, migration validation, a high-severity dependency audit, secret-pattern scan and CodeQL. Enable GitHub secret scanning and dependency alerts on the public repository. Protect the default branch by requiring the CI `verify`, `e2e`, and `codeql` checks, and protect the manual `production` environment separately.
 
 ## Reporting a vulnerability
 

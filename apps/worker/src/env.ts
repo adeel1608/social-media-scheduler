@@ -63,6 +63,18 @@ export const requiredProductionEnv: Array<keyof Env> = [
   "GOOGLE_REDIRECT_URI",
 ];
 
+const PLACEHOLDER_MARKERS = [
+  "replace-with",
+  "replace_me",
+  "your-project",
+  "your_project",
+  "your-domain",
+  "example.com",
+  "example.net",
+  "example.org",
+  "example.invalid",
+];
+
 function isBasicEmail(value: string): boolean {
   if (value.length === 0 || value.length > 254) return false;
 
@@ -82,6 +94,19 @@ function isBasicEmail(value: string): boolean {
 export function configurationStatus(env: Env) {
   const missing = requiredProductionEnv.filter((key) => !env[key]);
   const invalid: Array<keyof Env> = [];
+  if (env.ENVIRONMENT === "production") {
+    for (const key of requiredProductionEnv) {
+      const value = env[key];
+      if (
+        typeof value === "string" &&
+        PLACEHOLDER_MARKERS.some((marker) =>
+          value.toLowerCase().includes(marker),
+        )
+      ) {
+        invalid.push(key);
+      }
+    }
+  }
   if (env.TOKEN_ENCRYPTION_KEY) {
     try {
       if (atob(env.TOKEN_ENCRYPTION_KEY).length !== 32)
@@ -130,6 +155,23 @@ export function configurationStatus(env: Env) {
   for (const key of ["OWNER_EMAIL", "NOTIFICATION_EMAIL"] as const) {
     if (env[key] && !isBasicEmail(env[key])) invalid.push(key);
   }
+  if (env.OWNER_EMAIL && env.OWNER_EMAIL !== env.OWNER_EMAIL.toLowerCase()) {
+    invalid.push("OWNER_EMAIL");
+  }
+  const resendFrom = env.RESEND_FROM
+    ? senderEmailFrom(env.RESEND_FROM)
+    : undefined;
+  if (env.RESEND_FROM && !resendFrom) invalid.push("RESEND_FROM");
+  if (resendFrom?.endsWith("@resend.dev")) {
+    if (resendFrom !== "onboarding@resend.dev") invalid.push("RESEND_FROM");
+    if (
+      !env.OWNER_EMAIL ||
+      !env.NOTIFICATION_EMAIL ||
+      env.NOTIFICATION_EMAIL.toLowerCase() !== env.OWNER_EMAIL.toLowerCase()
+    ) {
+      invalid.push("NOTIFICATION_EMAIL");
+    }
+  }
   if (env.TIMEZONE) {
     try {
       new Intl.DateTimeFormat("en-AU", { timeZone: env.TIMEZONE });
@@ -150,6 +192,13 @@ export function configurationStatus(env: Env) {
     liveTestSafetyEnabled: env.LIVE_TEST_CONFIRM === "true",
     environment: env.ENVIRONMENT,
   };
+}
+
+function senderEmailFrom(value: string): string | undefined {
+  const trimmed = value.trim();
+  const bracketed = trimmed.match(/^[^<>\r\n]{1,100}<([^<>]+)>$/);
+  const email = (bracketed?.[1] ?? trimmed).trim().toLowerCase();
+  return isBasicEmail(email) ? email : undefined;
 }
 
 export function assertProductionConfigured(env: Env): void {

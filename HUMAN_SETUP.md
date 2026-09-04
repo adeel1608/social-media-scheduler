@@ -23,6 +23,13 @@ other repository. The upstream maintainer repository is
 `adeel1608/social-media-scheduler`; it is an example, not the required identity
 for cloned installations.
 
+Protect the default branch before production use: require pull requests and the
+CI `verify`, `e2e`, and `codeql` checks, and prevent force pushes/deletion. Also
+create a protected GitHub `production` environment restricted to the default
+branch, with intended reviewers where the repository plan supports them. These
+GitHub controls are installation settings and cannot be inherited reliably by
+a clone.
+
 ## 2. Provision Supabase
 
 Follow [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md). Record the project URL and public anon key for the browser. Store the service-role key only as a Worker secret. Apply migrations, create the one owner user, and insert `installation_settings` with the exact lower-case `OWNER_EMAIL`.

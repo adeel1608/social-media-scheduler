@@ -72,4 +72,36 @@ describe("fail-closed production configuration", () => {
 
     expect(status.invalid).toContain("WORKER_PUBLIC_URL");
   });
+
+  it("rejects production placeholders and a mixed-case owner identity", () => {
+    const status = configurationStatus({
+      ENVIRONMENT: "production",
+      OWNER_EMAIL: "Owner@example.com",
+      SUPABASE_URL: "https://your-project.supabase.co",
+    } as Env);
+
+    expect(status.invalid).toEqual(
+      expect.arrayContaining(["OWNER_EMAIL", "SUPABASE_URL"]),
+    );
+  });
+
+  it("allows the Resend test sender only for owner-address notifications", () => {
+    const valid = configurationStatus({
+      OWNER_EMAIL: "owner@postline.dev",
+      NOTIFICATION_EMAIL: "owner@postline.dev",
+      RESEND_FROM: "Postline <onboarding@resend.dev>",
+    } as Env);
+    expect(valid.invalid).not.toEqual(
+      expect.arrayContaining(["RESEND_FROM", "NOTIFICATION_EMAIL"]),
+    );
+
+    const invalid = configurationStatus({
+      OWNER_EMAIL: "owner@postline.dev",
+      NOTIFICATION_EMAIL: "someone-else@postline.dev",
+      RESEND_FROM: "anything@resend.dev",
+    } as Env);
+    expect(invalid.invalid).toEqual(
+      expect.arrayContaining(["RESEND_FROM", "NOTIFICATION_EMAIL"]),
+    );
+  });
 });

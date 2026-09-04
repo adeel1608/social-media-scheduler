@@ -27,6 +27,8 @@ SMTP settings:
 
 Never commit, log, display, or place the App Password in a frontend or `VITE_`
 variable. Google can revoke App Passwords after an account-password change.
+Google does not generally recommend App Passwords; use this narrowly because
+SMTP cannot use the normal Sign in with Google flow.
 This route is suitable only for low-volume owner authentication and may have
 weaker transactional-email deliverability than a dedicated SMTP provider.
 Every clone owner must supply and protect their own SMTP account and
@@ -62,6 +64,11 @@ owner's address and the owner deliberately accepts those limitations. Otherwise
 failure notification remains blocked until a domain is verified or another
 suitable sender is configured. Postline does not configure either option
 automatically.
+
+The Worker preflight also requires the test-sender recipient to equal
+`OWNER_EMAIL`. That enforces Postline's single-owner boundary, but it cannot
+prove which address owns the external Resend account; the human installer must
+still verify that exact match in Resend.
 
 Emails contain a post identifier/title, platform, scheduled/failure time, safe
 error, definite/ambiguous status, dashboard link, and manual-retry guidance.
