@@ -1,5 +1,9 @@
 export interface PublicIdentityEnvironment {
   readonly MODE?: string;
+  readonly VITE_APP_URL?: string;
+  readonly VITE_API_URL?: string;
+  readonly VITE_SUPABASE_URL?: string;
+  readonly VITE_SUPABASE_ANON_KEY?: string;
   readonly VITE_DEMO_MODE?: string;
   readonly VITE_OPERATOR_NAME?: string;
   readonly VITE_PUBLIC_CONTACT_EMAIL?: string;
@@ -8,6 +12,14 @@ export interface PublicIdentityEnvironment {
 export interface PublicIdentity {
   operatorName: string;
   contactEmail: string;
+}
+
+export interface PublicWebConfiguration {
+  appUrl: string;
+  apiUrl: string;
+  supabaseUrl: string;
+  supabaseAnonKey: string;
+  identity: PublicIdentity;
 }
 
 const DEMO_IDENTITY: PublicIdentity = {
@@ -26,6 +38,59 @@ const PLACEHOLDER_PARTS = [
   "example.org",
   "example.invalid",
 ];
+
+const PUBLIC_CONFIGURATION_KEYS = [
+  "VITE_APP_URL",
+  "VITE_API_URL",
+  "VITE_SUPABASE_URL",
+  "VITE_SUPABASE_ANON_KEY",
+] as const;
+
+export function resolvePublicWebConfiguration(
+  env: PublicIdentityEnvironment,
+): PublicWebConfiguration {
+  const identity = resolvePublicIdentity(env);
+  const demoMode =
+    env.VITE_DEMO_MODE === "true" || env.MODE?.toLowerCase() === "e2e";
+
+  if (demoMode) {
+    return {
+      appUrl: env.VITE_APP_URL?.trim() || "http://localhost:5173",
+      apiUrl: env.VITE_API_URL?.trim() || "http://localhost:8787",
+      supabaseUrl: env.VITE_SUPABASE_URL?.trim() || "",
+      supabaseAnonKey: env.VITE_SUPABASE_ANON_KEY?.trim() || "",
+      identity,
+    };
+  }
+
+  for (const key of PUBLIC_CONFIGURATION_KEYS) {
+    const value = env[key]?.trim() ?? "";
+    if (!value)
+      throw new Error(`${key} is required when VITE_DEMO_MODE is false.`);
+    if (isPlaceholder(value)) {
+      throw new Error(`${key} must not contain a placeholder value.`);
+    }
+  }
+
+  const appUrl = requireHttpsOrigin("VITE_APP_URL", env.VITE_APP_URL!);
+  const apiUrl = requireHttpsOrigin("VITE_API_URL", env.VITE_API_URL!);
+  const supabaseUrl = requireHttpsOrigin(
+    "VITE_SUPABASE_URL",
+    env.VITE_SUPABASE_URL!,
+  );
+  const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY!.trim();
+  if (
+    supabaseAnonKey.length < 20 ||
+    supabaseAnonKey.length > 4096 ||
+    /\s/.test(supabaseAnonKey)
+  ) {
+    throw new Error(
+      "VITE_SUPABASE_ANON_KEY must be a valid browser-safe Supabase public key.",
+    );
+  }
+
+  return { appUrl, apiUrl, supabaseUrl, supabaseAnonKey, identity };
+}
 
 export function resolvePublicIdentity(
   env: PublicIdentityEnvironment,
@@ -136,4 +201,24 @@ function isPlaceholderContact(value: string): boolean {
 function isPlaceholder(value: string): boolean {
   const normalized = value.toLowerCase();
   return PLACEHOLDER_PARTS.some((part) => normalized.includes(part));
+}
+
+function requireHttpsOrigin(key: string, value: string): string {
+  try {
+    const url = new URL(value.trim());
+    if (
+      url.protocol !== "https:" ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash ||
+      url.username ||
+      url.password ||
+      url.port
+    ) {
+      throw new Error("not an HTTPS origin");
+    }
+    return url.origin;
+  } catch {
+    throw new Error(`${key} must be a credential-free HTTPS origin.`);
+  }
 }

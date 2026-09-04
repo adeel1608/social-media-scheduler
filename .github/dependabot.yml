@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      official-github-actions:
+        patterns:
+          - "actions/*"
+          - "github/codeql-action"
+    open-pull-requests-limit: 2
