@@ -35,9 +35,15 @@ Follow [docs/UPLOADTHING_SETUP.md](docs/UPLOADTHING_SETUP.md). Create your own a
 
 Follow [docs/CLOUDFLARE_SETUP.md](docs/CLOUDFLARE_SETUP.md). Inspect first, then create only missing free production/dead-letter queues, add Worker secrets, deploy, and confirm the UTC one-minute cron. R2 is not used and must not be enabled for this setup.
 
-## 5. Configure failure email
+## 5. Configure email delivery
 
-Follow [docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md). Verify a domain and create a restricted Resend API key. Set `NOTIFICATION_EMAIL` and a `RESEND_FROM` address on the verified domain. No success email is sent.
+Follow [docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md). Supabase Auth SMTP sends
+owner login links; the Worker's separate Resend configuration sends only
+deduplicated failure/ambiguous-result notifications. Clone owners provide their
+own credentials for both paths. A Resend verified domain is preferred. Its test
+sender is limited to the Resend account owner's address and is only an
+owner-only evaluation option, not a general production sender. No success email
+is sent.
 
 ## 6. Register provider applications
 
@@ -95,4 +101,9 @@ Never describe mocks or a successful OAuth callback as a live publishing test.
 
 ## 9. Production checks
 
-Run `corepack pnpm check`, `corepack pnpm test:e2e`, `corepack pnpm audit --audit-level high`, and verify `/health`. Confirm backups, the UploadThing 1.8 GiB application cap and 2 GB provider allowance, cron, queue `max_retries=0`, sender domain, owner allowlist, UploadThing/provider callback URIs, token expiry, audit flags, and log redaction.
+Run `corepack pnpm check`, `corepack pnpm test:e2e`, `corepack pnpm audit --audit-level high`, and verify `/health`. Confirm backups, the UploadThing 1.8 GiB application cap and 2 GB provider allowance, cron, queue `max_retries=0`, sender configuration and its documented scope, owner allowlist, UploadThing/provider callback URIs, token expiry, audit flags, and log redaction.
+
+Keep direct Auth signup disabled in the hosted Supabase dashboard, require at
+least 60 seconds between email requests, and review Auth rate limits/CAPTCHA.
+The checked-in local Supabase defaults enforce the same signup and email-spacing
+baseline.

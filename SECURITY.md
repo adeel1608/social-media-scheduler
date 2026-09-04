@@ -2,7 +2,7 @@
 
 ## Model
 
-Each deployment has one owner. Supabase authenticates with a one-time magic link, the Worker compares the verified email to `OWNER_EMAIL`, and RLS requires the JWT user ID plus matching installation owner email. The client requests magic links with `shouldCreateUser: false`, so unknown email addresses cannot self-register through Postline.
+Each deployment has one owner. Supabase authenticates with a one-time magic link, the Worker compares the verified email to `OWNER_EMAIL`, and RLS requires the JWT user ID plus matching installation owner email. The client requests magic links with `shouldCreateUser: false`, and the checked-in Supabase Auth configuration disables direct global/email signup and anonymous users. Hosted installations must apply the same dashboard setting after creating the owner, because client controls alone do not protect the direct Auth API.
 
 ## Secrets and tokens
 
@@ -20,6 +20,7 @@ Generate a 32-byte base64 encryption key locally. To rotate, deploy code able to
 - Every `/api/*` endpoint except provider OAuth callbacks and the UploadThing file-route endpoint requires generic owner middleware. Upload initiation authenticates the owner inside UploadThing route middleware; UploadThing callbacks are public so the provider can reach them, but the official SDK verifies their HMAC signature before completion logic runs.
 - State-changing database RPCs enforce owner identity/RLS again.
 - Sensitive route rate limiting is backed by `rate_limit_buckets`; deployments should also add Cloudflare WAF/rate-limit rules to OAuth and upload endpoints.
+- Email OTP requests are spaced by at least 60 seconds in the local Auth configuration. Hosted deployments must retain that minimum, review Supabase Auth rate limits, and add CAPTCHA when appropriate for their public threat model.
 - Security headers deny framing, MIME sniffing, sensitive browser capabilities and unexpected origins. Set CSP connect sources to actual production hosts.
 - UploadThing provider URLs are validated against the app-specific official hostname (plus the documented legacy host) and exact provider file key before storage or fetch. Redirects, credentials, unexpected ports, arbitrary hosts and malformed ranges are rejected. Signed delivery URLs resolve a media UUID server-side and cannot proxy arbitrary destinations.
 

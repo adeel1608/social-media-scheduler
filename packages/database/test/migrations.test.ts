@@ -18,11 +18,13 @@ describe("Supabase migrations", () => {
       "oauth_states",
       "media_assets",
       "posts",
+      "post_media",
       "post_targets",
       "publish_attempts",
       "analytics_snapshots",
       "email_events",
       "audit_log",
+      "rate_limit_buckets",
     ]) {
       expect(sql).toContain(
         `alter table public.${table} enable row level security`,

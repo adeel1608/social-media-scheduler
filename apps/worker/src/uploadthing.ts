@@ -172,7 +172,6 @@ export async function authorizeUploadInitiation(
     throw new UploadThingError({
       code: "INTERNAL_SERVER_ERROR",
       message: "The upload reservation could not be created.",
-      cause: error,
     });
   }
   return {

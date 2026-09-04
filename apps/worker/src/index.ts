@@ -21,6 +21,7 @@ import {
 } from "./env";
 import { ownerDatabase, SupabaseRest } from "./database";
 import oauthRoutes from "./oauth-routes";
+import { logWorkerError } from "./logging";
 import { processQueueJob, updateMediaRetentionForPost } from "./publisher";
 import {
   ACTIVE_MEDIA_LIMIT_BYTES,
@@ -59,14 +60,9 @@ app.use(
   }),
 );
 
-app.onError((error, c) => {
-  console.error(
-    JSON.stringify({
-      level: "error",
-      message: error.message,
-      requestId: c.req.header("CF-Ray"),
-    }),
-  );
+app.onError((_error, c) => {
+  const requestId = c.req.header("CF-Ray");
+  logWorkerError("request_failed", requestId ? { requestId } : {});
   return c.json(
     {
       error: "request_failed",
@@ -690,7 +686,7 @@ const worker = {
           mode: "publish",
           requestedAt: new Date().toISOString(),
         });
-      } catch (error) {
+      } catch {
         // No provider request exists yet, so the next cron may safely dispatch again.
         await db.update(`post_targets?id=eq.${target.id}`, {
           status: "scheduled",
@@ -699,14 +695,7 @@ const worker = {
           lease_owner: null,
           lease_expires_at: null,
         });
-        console.error(
-          JSON.stringify({
-            level: "error",
-            message:
-              error instanceof Error ? error.message : "queue_dispatch_failed",
-            targetId: target.id,
-          }),
-        );
+        logWorkerError("queue_dispatch_failed", { targetId: target.id });
       }
     }
     const scheduledMinute = new Date(controller.scheduledTime).getUTCMinutes();
@@ -721,15 +710,10 @@ const worker = {
     for (const message of batch.messages) {
       try {
         await processQueueJob(env, message.body);
-      } catch (error) {
-        console.error(
-          JSON.stringify({
-            level: "error",
-            message:
-              error instanceof Error ? error.message : "queue_job_failed",
-            targetId: message.body.targetId,
-          }),
-        );
+      } catch {
+        logWorkerError("queue_job_failed", {
+          targetId: message.body.targetId,
+        });
       } finally {
         // API failures are recorded. Infrastructure delivery is acknowledged and never automatically retried.
         message.ack();

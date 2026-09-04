@@ -30,7 +30,9 @@ export async function sendFailureEmailOnce(
     "resolution=ignore-duplicates,return=representation",
   );
   if (!rows.length) return false;
-  const safeMessage = String(redactSecrets(input.safeMessage));
+  const safeMessage = String(redactSecrets(input.safeMessage))
+    .replace(/https?:\/\/\S+/gi, "[REDACTED_URL]")
+    .slice(0, 500);
   const ambiguous = input.status === "needs_review";
   const html = `
     <h1>Scheduled post ${ambiguous ? "needs review" : "failed"}</h1>
@@ -47,6 +49,7 @@ export async function sendFailureEmailOnce(
     headers: {
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
       "Content-Type": "application/json",
+      "Idempotency-Key": deduplicationKey,
     },
     body: JSON.stringify({
       from: env.RESEND_FROM,

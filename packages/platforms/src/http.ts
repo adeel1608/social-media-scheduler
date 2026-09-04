@@ -10,12 +10,11 @@ export async function jsonRequest<T>(
   let response: Response;
   try {
     response = await fetcher(url, init);
-  } catch (error) {
+  } catch {
     throw {
       name: "NetworkError",
       code: "network_error",
-      message:
-        error instanceof Error ? error.message : "Network request failed",
+      message: "Network request failed",
       ambiguous: init.method !== "GET",
     };
   }
@@ -46,10 +45,13 @@ export function genericNormalizeError(error: unknown): PlatformError {
     const nested = body?.error ?? body;
     const status =
       typeof candidate.status === "number" ? candidate.status : undefined;
-    const code = String(
+    const candidateCode = String(
       nested?.code ?? nested?.error_code ?? candidate.code ?? "platform_error",
     );
-    const message = String(
+    const code = /^[a-zA-Z0-9._:-]{1,100}$/.test(candidateCode)
+      ? candidateCode
+      : "platform_error";
+    const message = sanitizePlatformErrorText(
       nested?.message ??
         nested?.error_description ??
         candidate.message ??
@@ -60,7 +62,7 @@ export function genericNormalizeError(error: unknown): PlatformError {
     );
     return {
       code,
-      message: message.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]"),
+      message,
       retryable:
         !ambiguous &&
         (status === 429 || (status !== undefined && status >= 500)),
@@ -74,4 +76,12 @@ export function genericNormalizeError(error: unknown): PlatformError {
     retryable: false,
     ambiguous: false,
   };
+}
+
+function sanitizePlatformErrorText(value: unknown): string {
+  const redacted = String(redactSecrets(String(value))).replace(
+    /https?:\/\/\S+/gi,
+    "[REDACTED_URL]",
+  );
+  return redacted.slice(0, 500);
 }
