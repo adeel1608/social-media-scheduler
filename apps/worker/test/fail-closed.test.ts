@@ -12,6 +12,20 @@ const incompleteProduction = {
 } as Env;
 
 describe("production HTTP fail-closed gate", () => {
+  it("serves a non-sensitive service root after the gate passes", async () => {
+    const response = await app.request(
+      "https://worker.example.test/",
+      undefined,
+      { ENVIRONMENT: "development" } as Env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      service: "Postline API",
+      status: "ok",
+    });
+  });
+
   it("keeps health diagnostic but blocks every other incomplete route", async () => {
     const health = await app.request(
       "https://worker.example.test/health",
