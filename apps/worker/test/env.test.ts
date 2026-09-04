@@ -73,6 +73,41 @@ describe("fail-closed production configuration", () => {
     expect(status.invalid).toContain("WORKER_PUBLIC_URL");
   });
 
+  it("requires exact origins and Worker-owned OAuth callbacks", () => {
+    const status = configurationStatus({
+      ENVIRONMENT: "production",
+      APP_URL: "https://postline.example.dev/",
+      WORKER_PUBLIC_URL: "https://api.postline.example.dev",
+      SUPABASE_URL: "https://project.supabase.co/path",
+      META_REDIRECT_URI: "https://other.example.dev/callback",
+      TIKTOK_REDIRECT_URI:
+        "https://api.postline.example.dev/api/oauth/tiktok/callback",
+      GOOGLE_REDIRECT_URI:
+        "https://api.postline.example.dev/api/oauth/youtube/callback",
+    } as Env);
+
+    expect(status.invalid).toEqual(
+      expect.arrayContaining(["APP_URL", "SUPABASE_URL", "META_REDIRECT_URI"]),
+    );
+    expect(status.invalid).not.toContain("TIKTOK_REDIRECT_URI");
+    expect(status.invalid).not.toContain("GOOGLE_REDIRECT_URI");
+  });
+
+  it("requires encryption-key versioning and exact boolean flags", () => {
+    const status = configurationStatus({
+      ENVIRONMENT: "production",
+      LIVE_TEST_CONFIRM: "yes",
+      META_APP_REVIEW_APPROVED: "no",
+      TIKTOK_CONTENT_POSTING_AUDITED: "false",
+      YOUTUBE_API_AUDIT_APPROVED: "false",
+    } as Env);
+
+    expect(status.missing).toContain("TOKEN_ENCRYPTION_KEY_VERSION");
+    expect(status.invalid).toEqual(
+      expect.arrayContaining(["LIVE_TEST_CONFIRM", "META_APP_REVIEW_APPROVED"]),
+    );
+  });
+
   it("rejects production placeholders and a mixed-case owner identity", () => {
     const status = configurationStatus({
       ENVIRONMENT: "production",

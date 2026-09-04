@@ -49,6 +49,7 @@ export const requiredProductionEnv: Array<keyof Env> = [
   "SUPABASE_ANON_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
   "TOKEN_ENCRYPTION_KEY",
+  "TOKEN_ENCRYPTION_KEY_VERSION",
   "UPLOADTHING_TOKEN",
   "RESEND_API_KEY",
   "RESEND_FROM",
@@ -138,18 +139,43 @@ export function configurationStatus(env: Env) {
         url.protocol === "http:" &&
         (url.hostname === "localhost" || url.hostname === "127.0.0.1");
       if (url.protocol !== "https:" && !localHttp) invalid.push(key);
+      const mustBeOrigin = [
+        "APP_URL",
+        "WORKER_PUBLIC_URL",
+        "SUPABASE_URL",
+      ].includes(key);
       if (
-        key === "WORKER_PUBLIC_URL" &&
-        (url.pathname !== "/" ||
-          url.search ||
-          url.hash ||
-          url.username ||
-          url.password ||
-          url.port)
-      )
+        (mustBeOrigin &&
+          (value !== url.origin ||
+            url.pathname !== "/" ||
+            url.search ||
+            url.hash ||
+            url.username ||
+            url.password)) ||
+        (!mustBeOrigin &&
+          (url.search || url.hash || url.username || url.password)) ||
+        (env.ENVIRONMENT === "production" && url.port)
+      ) {
         invalid.push(key);
+      }
     } catch {
       invalid.push(key);
+    }
+  }
+  if (env.WORKER_PUBLIC_URL) {
+    for (const [key, path] of [
+      ["META_REDIRECT_URI", "/api/oauth/instagram/callback"],
+      ["TIKTOK_REDIRECT_URI", "/api/oauth/tiktok/callback"],
+      ["GOOGLE_REDIRECT_URI", "/api/oauth/youtube/callback"],
+    ] as const) {
+      if (!env[key]) continue;
+      try {
+        if (env[key] !== new URL(path, env.WORKER_PUBLIC_URL).href) {
+          invalid.push(key);
+        }
+      } catch {
+        invalid.push(key);
+      }
     }
   }
   for (const key of ["OWNER_EMAIL", "NOTIFICATION_EMAIL"] as const) {
@@ -177,6 +203,16 @@ export function configurationStatus(env: Env) {
       new Intl.DateTimeFormat("en-AU", { timeZone: env.TIMEZONE });
     } catch {
       invalid.push("TIMEZONE");
+    }
+  }
+  for (const key of [
+    "LIVE_TEST_CONFIRM",
+    "META_APP_REVIEW_APPROVED",
+    "TIKTOK_CONTENT_POSTING_AUDITED",
+    "YOUTUBE_API_AUDIT_APPROVED",
+  ] as const) {
+    if (env[key] && env[key] !== "true" && env[key] !== "false") {
+      invalid.push(key);
     }
   }
   const approvals = {

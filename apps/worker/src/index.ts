@@ -42,6 +42,22 @@ app.use("*", async (c, next) => {
   await next();
 });
 
+app.use("*", async (c, next) => {
+  if (c.req.path === "/health" || c.env.ENVIRONMENT !== "production") {
+    return next();
+  }
+  if (!configurationStatus(c.env).configured) {
+    return c.json(
+      {
+        error: "configuration_required",
+        message: "Production configuration is incomplete.",
+      },
+      503,
+    );
+  }
+  return next();
+});
+
 app.use(
   "/api/*",
   cors({
@@ -834,4 +850,5 @@ async function deleteMediaFromUploadThing(
   }
 }
 
+export { app };
 export default worker;

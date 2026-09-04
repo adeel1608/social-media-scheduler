@@ -10,6 +10,7 @@ Each deployment has one owner. Supabase authenticates with a one-time magic link
 - Service role, `UPLOADTHING_TOKEN`, OAuth client secrets, Resend key, and encryption/signing keys are Worker secrets.
 - Access/refresh tokens use Web Crypto AES-256-GCM with a unique 96-bit nonce. Ciphertext, nonce and key version use separate fields.
 - OAuth state is random, hashed at rest, expires after ten minutes and is consumed once. PKCE S256 is used where supported; its verifier is encrypted at rest.
+- Production configuration requires each provider callback to be the exact path on `WORKER_PUBLIC_URL`; redirects cannot contain credentials, query strings, or fragments.
 - Provider upload-session URLs are encrypted. Attempts/logs/email pass through structural redaction and never include tokens or signed media URLs.
 
 Generate a 32-byte base64 encryption key locally. To rotate, deploy code able to read old/new versions, re-encrypt every account and active upload session in a controlled transaction/batch, verify, then remove the old key. Do not merely change `TOKEN_ENCRYPTION_KEY_VERSION`.
@@ -27,7 +28,7 @@ Generate a 32-byte base64 encryption key locally. To rotate, deploy code able to
 ## Publishing safety
 
 - No provider password is accepted. No scraping, Selenium, browser automation, quota bypass or unofficial publishing endpoint exists.
-- Production configuration fails closed. Mock adapters exist only as injected test fetches; there is no production mock fallback.
+- Production configuration fails closed at the HTTP, scheduled, and queue entry points. Except for the diagnostic `/health` response, an incomplete production Worker returns 503 before authentication, callbacks, delivery, or application routes run. Mock adapters exist only as injected test fetches; there is no production mock fallback.
 - Real publishing requires `LIVE_TEST_CONFIRM=true`.
 - TikTok and YouTube public requests remain invalid while the provider audit flag is false. Postline never silently changes requested public content to private.
 - The consumer writes `publish_request_sent_at` before sending. A duplicate job cannot automatically resend. API failure is recorded and Queue delivery is acknowledged. Ambiguity becomes `needs_review`.
