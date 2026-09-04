@@ -239,8 +239,8 @@ export function SettingsPage() {
       </div>
       {message && <p className="form-message">{message}</p>}
       <div className="footer-links">
-        <a href="/privacy">Privacy Policy template</a>
-        <a href="/terms">Terms of Use template</a>
+        <a href="/privacy">Privacy Policy</a>
+        <a href="/terms">Terms of Use</a>
         <a href="/data-deletion">Data Deletion Instructions</a>
       </div>
     </div>

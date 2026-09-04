@@ -4,18 +4,24 @@ The repository completes everything that can be built and mock-tested without ac
 
 ## 1. Create the repository and verify identity
 
-This project targets `adeel1608/social-media-scheduler`. Before any push:
+Choose the GitHub account and repository that will own your installation. Set
+the expected values for your fork or clone, then require every identity check
+to pass before any push:
 
 ```bash
+EXPECTED_GITHUB_LOGIN="YOUR_GITHUB_LOGIN"
+EXPECTED_GITHUB_REPOSITORY="$EXPECTED_GITHUB_LOGIN/YOUR_REPOSITORY"
 gh auth login
-gh api user --jq .login
-# must print exactly: adeel1608
+test "$(gh api user --jq .login)" = "$EXPECTED_GITHUB_LOGIN"
 git remote get-url origin
-# must be exactly: https://github.com/adeel1608/social-media-scheduler.git
-gh repo view adeel1608/social-media-scheduler
+test "$(gh repo view --json nameWithOwner --jq .nameWithOwner)" = "$EXPECTED_GITHUB_REPOSITORY"
 ```
 
-If the local URL differs, use `git remote set-url origin https://github.com/adeel1608/social-media-scheduler.git`. Do not continue if the authenticated login differs. Do not touch any other repository.
+Inspect the remote URL and correct it to your intended repository if necessary.
+Do not continue when either exact comparison fails, and do not push to any
+other repository. The upstream maintainer repository is
+`adeel1608/social-media-scheduler`; it is an example, not the required identity
+for cloned installations.
 
 ## 2. Provision Supabase
 
@@ -37,7 +43,7 @@ Follow [docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md). Verify a domain and create a 
 
 Complete in this order so each provider receives stable policy and deletion URLs:
 
-1. Deploy the UI so `/privacy`, `/terms`, and `/data-deletion` are public and customize their template content.
+1. Configure `VITE_OPERATOR_NAME` and `VITE_PUBLIC_CONTACT_EMAIL`, then deploy the UI so `/privacy`, `/terms`, and `/data-deletion` are public.
 2. [Instagram / Meta](docs/META_SETUP.md): create the app, add exact callback, request content publishing and insights permissions, connect a professional account, and complete access/review requirements.
 3. [TikTok](docs/TIKTOK_SETUP.md): add Login Kit and Content Posting API, verify the media-delivery domain/prefix, request `video.publish`, and complete the audit. Public posts must stay blocked until it passes.
 4. [YouTube](docs/YOUTUBE_SETUP.md): enable Data and Analytics APIs, configure consent and web client, then complete verification/audit. Unverified-project uploads stay private, so requested public uploads must remain blocked.
@@ -50,13 +56,21 @@ Generate a token-encryption key locally:
 node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 ```
 
-Copy the output directly into a secure secret manager or the hidden `wrangler secret put TOKEN_ENCRYPTION_KEY` prompt. Add the UploadThing token separately without displaying it:
+Copy the output directly into a secure secret manager or a hidden Wrangler
+prompt. On an existing Worker, use the versioned secret command so the new
+version remains undeployed until you explicitly deploy it. Add the UploadThing
+token separately without displaying either value:
 
 ```bash
-corepack pnpm --dir apps/worker exec wrangler secret put UPLOADTHING_TOKEN
+corepack pnpm --dir apps/worker exec wrangler versions secret put TOKEN_ENCRYPTION_KEY
+corepack pnpm --dir apps/worker exec wrangler versions secret put UPLOADTHING_TOKEN
 ```
 
-Do not save either secret in shell history on a shared machine.
+`wrangler secret put` is different: it creates a Worker version and deploys it
+immediately. Do not use it as a non-deploying preparation step. Versioned
+secret commands require the Worker to exist; follow the inert-bootstrap process
+in [docs/CLOUDFLARE_SETUP.md](docs/CLOUDFLARE_SETUP.md) for a new Worker. Do not
+save either secret in shell history on a shared machine.
 
 Run the doctor:
 

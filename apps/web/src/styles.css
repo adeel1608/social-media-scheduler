@@ -2327,11 +2327,25 @@ button:disabled {
   font-weight: 500;
   font-size: 20px;
 }
-.legal-page section p {
+.legal-page section p,
+.legal-page section ul {
   margin: 0;
   color: #6d6a63;
   font-size: 11px;
   line-height: 1.7;
+}
+.legal-page section ul {
+  padding-left: 20px;
+}
+.legal-page section li + li {
+  margin-top: 7px;
+}
+.legal-page section a,
+.legal-intro a {
+  color: #a94836;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 @media (max-width: 1120px) {

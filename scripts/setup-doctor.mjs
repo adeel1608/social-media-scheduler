@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 const env = { ...process.env, ...(await loadDotEnv()) };
 
 const checks = [
+  ["VITE_OPERATOR_NAME", isOperatorName],
+  ["VITE_PUBLIC_CONTACT_EMAIL", isEmail],
   ["APP_URL", isUrl],
   ["WORKER_PUBLIC_URL", isUrl],
   ["OWNER_EMAIL", isEmail],
@@ -33,8 +35,14 @@ let missing = 0;
 let invalid = 0;
 for (const [name, validator] of checks) {
   const value = env[name] ?? "";
-  const placeholder = /replace-|your-|example\.com/i.test(value);
-  if (!value || placeholder) {
+  const demoPublicExample =
+    env.VITE_DEMO_MODE === "true" &&
+    ["VITE_OPERATOR_NAME", "VITE_PUBLIC_CONTACT_EMAIL"].includes(name);
+  const placeholder =
+    isPlaceholder(value) ||
+    (name === "VITE_OPERATOR_NAME" && value.toLowerCase().includes("demo")) ||
+    (name === "VITE_PUBLIC_CONTACT_EMAIL" && isPlaceholderContact(value));
+  if (!value || (placeholder && !demoPublicExample)) {
     console.log(`MISSING             ${name}`);
     missing += 1;
   } else if (!validator(value)) {
@@ -124,7 +132,69 @@ function isPresent(value) {
   return value.trim().length >= 8;
 }
 function isEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  if (!value || value.length > 254 || value !== value.trim()) return false;
+  let atIndex = -1;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    const code = character.charCodeAt(0);
+    if (code <= 32 || code >= 127) return false;
+    if (character === "@") {
+      if (atIndex !== -1) return false;
+      atIndex = index;
+    }
+  }
+  if (atIndex < 1 || atIndex > 64 || atIndex === value.length - 1) return false;
+  const labels = value.slice(atIndex + 1).split(".");
+  if (labels.length < 2) return false;
+  for (const label of labels) {
+    if (
+      !label ||
+      label.length > 63 ||
+      label.startsWith("-") ||
+      label.endsWith("-")
+    )
+      return false;
+    for (const character of label) {
+      const code = character.toLowerCase().charCodeAt(0);
+      const isLetter = code >= 97 && code <= 122;
+      const isNumber = code >= 48 && code <= 57;
+      if (!isLetter && !isNumber && character !== "-") return false;
+    }
+  }
+  return labels.at(-1).length >= 2;
+}
+function isOperatorName(value) {
+  if (value.length < 2 || value.length > 100 || value !== value.trim())
+    return false;
+  return [...value].every((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 32 && code !== 127;
+  });
+}
+function isPlaceholder(value) {
+  const normalized = value.toLowerCase();
+  return [
+    "replace-",
+    "your-",
+    "your name",
+    "operator name",
+    "placeholder",
+    "example.com",
+    "example.net",
+    "example.org",
+    "example.invalid",
+  ].some((part) => normalized.includes(part));
+}
+function isPlaceholderContact(value) {
+  const normalized = value.toLowerCase();
+  const domain = normalized.slice(normalized.lastIndexOf("@") + 1);
+  return (
+    normalized.startsWith("demo@") ||
+    domain === "localhost" ||
+    domain.endsWith(".localhost") ||
+    domain.endsWith(".test") ||
+    domain.endsWith(".invalid")
+  );
 }
 function isUrl(value) {
   try {

@@ -19,15 +19,15 @@ jobs:
           node-version: 24
       - name: Enable pinned pnpm
         run: corepack enable && corepack prepare pnpm@11.25.0 --activate
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm format:check
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
-      - run: pnpm db:validate
-      - run: pnpm secrets:scan
-      - run: pnpm audit --audit-level high
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm format:check
+      - run: corepack pnpm lint
+      - run: corepack pnpm typecheck
+      - run: corepack pnpm test
+      - run: corepack pnpm build:verify
+      - run: corepack pnpm db:validate
+      - run: corepack pnpm secrets:scan
+      - run: corepack pnpm audit --audit-level high
 
   e2e:
     runs-on: ubuntu-latest
@@ -38,12 +38,15 @@ jobs:
         with:
           node-version: 24
       - run: corepack enable && corepack prepare pnpm@11.25.0 --activate
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @scheduler/web build
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
+      - run: corepack pnpm install --frozen-lockfile
+      - name: Verify production-mode web configuration
+        run: corepack pnpm --filter @scheduler/web build
         env:
-          VITE_DEMO_MODE: "true"
+          VITE_DEMO_MODE: "false"
+          VITE_OPERATOR_NAME: Postline CI
+          VITE_PUBLIC_CONTACT_EMAIL: ci-contact@postline.dev
+      - run: corepack pnpm exec playwright install --with-deps chromium
+      - run: corepack pnpm test:e2e
 
   codeql:
     runs-on: ubuntu-latest

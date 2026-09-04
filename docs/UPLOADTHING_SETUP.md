@@ -15,11 +15,16 @@ Do not upload sensitive material that cannot safely have public-readable URL exp
 ## Create and configure the app
 
 1. Sign in to UploadThing and create one application for this Postline installation on the free plan.
-2. Copy its v7 token directly from the UploadThing dashboard into the hidden Wrangler prompt. Do not paste it into chat, screenshots, commits, issue comments, shell command arguments, `.env.example`, or any `VITE_` variable:
+2. After the Worker exists, copy its v7 token directly from the UploadThing dashboard into Wrangler's hidden versioned-secret prompt. This creates an undeployed Worker version. Do not paste it into chat, screenshots, commits, issue comments, shell command arguments, `.env.example`, or any `VITE_` variable:
 
    ```bash
-   corepack pnpm --dir apps/worker exec wrangler secret put UPLOADTHING_TOKEN
+   corepack pnpm --dir apps/worker exec wrangler versions secret put UPLOADTHING_TOKEN
    ```
+
+   The unversioned `wrangler secret put` command deploys its new Worker version
+   immediately and must not be used as a non-deploying setup step. For a new
+   Worker, complete the inert bootstrap in
+   [CLOUDFLARE_SETUP.md](CLOUDFLARE_SETUP.md) first.
 
 3. Set the non-secret `WORKER_PUBLIC_URL` to the final HTTPS Worker origin. The Worker supplies `https://YOUR_WORKER_HOST/api/uploadthing` as the callback URL.
 4. Deploy only after all production secrets are real. Upload a harmless file while `LIVE_TEST_CONFIRM=false`, wait for server-confirmed completion, inspect the storage-usage panel, then delete it and confirm usage falls.

@@ -55,3 +55,23 @@ test("failed items explain retention and require explicit retry", async ({
     page.getByText("Manual retry queued with a new idempotency key."),
   ).toBeVisible();
 });
+
+test("legal policies are public, complete, and contactable", async ({
+  page,
+}) => {
+  for (const [path, heading] of [
+    ["/privacy", "Privacy Policy"],
+    ["/terms", "Terms of Use"],
+    ["/data-deletion", "Data Deletion Instructions"],
+  ]) {
+    await page.goto(path);
+    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    await expect(page.getByText(/customizable template/i)).toHaveCount(0);
+  }
+
+  await page.goto("/privacy");
+  const contact = page.locator('a[href^="mailto:"]').first();
+  await expect(contact).toBeVisible();
+  await expect(contact).toHaveAttribute("aria-label", /^Email .+ at .+@.+$/);
+  await expect(contact).toHaveAttribute("href", /^mailto:.+@.+$/);
+});
