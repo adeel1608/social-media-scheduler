@@ -59,7 +59,18 @@ a:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 3px solid rgba(100, 103, 220, 0.28);
+  outline: 2px solid var(--indigo);
+  outline-offset: 2px;
+}
+
+.search-box:focus-within,
+.select-button:focus-within,
+.schedule-fields > label:focus-within,
+.field-label input:focus-visible,
+.field-label textarea:focus-visible,
+.field-label select:focus-visible,
+.login-card input:focus-visible {
+  outline: 2px solid var(--indigo);
   outline-offset: 2px;
 }
 

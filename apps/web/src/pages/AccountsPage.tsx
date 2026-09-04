@@ -76,7 +76,11 @@ export function AccountsPage() {
           encrypted before storage and never reach browser code after
           connection.
         </p>
-        <a href="/docs/PLATFORM_SUPPORT_MATRIX.md">
+        <a
+          href="https://github.com/adeel1608/social-media-scheduler/blob/main/docs/PLATFORM_SUPPORT_MATRIX.md"
+          target="_blank"
+          rel="noreferrer"
+        >
           View platform support <ArrowUpRight size={15} />
         </a>
       </div>
