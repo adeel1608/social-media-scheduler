@@ -5,7 +5,11 @@ import {
   type TikTokMetadata,
 } from "@scheduler/shared";
 
-import { genericNormalizeError, jsonRequest } from "./http";
+import {
+  genericNormalizeError,
+  jsonRequest,
+  trustedUploadSessionUrl,
+} from "./http";
 import type {
   AccountProfile,
   AnalyticsRequest,
@@ -427,11 +431,12 @@ export class TikTokAdapter implements PlatformAdapter {
         }),
       },
     );
+    const uploadUrl = trustedUploadSessionUrl("tiktok", result.data.upload_url);
     return {
       outcome: "processing" as const,
       statusHandle: result.data.publish_id,
       uploadSession: {
-        url: result.data.upload_url,
+        url: uploadUrl,
         nextByte: 0,
         totalBytes: source.sizeBytes,
         chunkSize,

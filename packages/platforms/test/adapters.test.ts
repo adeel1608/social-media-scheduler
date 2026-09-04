@@ -398,7 +398,10 @@ describe("official API adapters", () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(null, {
         status: 200,
-        headers: { Location: "https://upload.youtube.test/session" },
+        headers: {
+          Location:
+            "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&upload_id=session",
+        },
       }),
     );
     const adapter = new YouTubeAdapter(
@@ -423,7 +426,7 @@ describe("official API adapters", () => {
       deliveryUrls: [],
     });
     expect(result.uploadSession).toMatchObject({
-      url: "https://upload.youtube.test/session",
+      url: "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&upload_id=session",
       nextByte: 0,
       totalBytes: video.sizeBytes,
     });
