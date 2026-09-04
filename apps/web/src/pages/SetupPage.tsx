@@ -105,8 +105,8 @@ export function SetupPage() {
       {
         title: "Resend failure notifications",
         detail: hasKeys("RESEND_API_KEY", "RESEND_FROM")
-          ? "Credentials present · verify the sender domain"
-          : "API key and verified sender still required",
+          ? "Credentials present · verify sender eligibility and recipient scope"
+          : "API key and an eligible sender are still required",
         ready: hasKeys("RESEND_API_KEY", "RESEND_FROM"),
       },
       {

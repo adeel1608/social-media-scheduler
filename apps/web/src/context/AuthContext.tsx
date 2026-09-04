@@ -29,18 +29,27 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(!demoMode);
+  const [loading, setLoading] = useState(!demoMode && Boolean(supabase));
 
   useEffect(() => {
     if (!supabase) return;
-    void supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setLoading(false);
-    });
+    let active = true;
+    void supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        if (active) setSession(data.session);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setLoading(false);
+      });
     const { data } = supabase.auth.onAuthStateChange((_event, nextSession) =>
       setSession(nextSession),
     );
-    return () => data.subscription.unsubscribe();
+    return () => {
+      active = false;
+      data.subscription.unsubscribe();
+    };
   }, []);
 
   const value = useMemo<AuthContextValue>(
@@ -60,7 +69,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             emailRedirectTo: `${import.meta.env.VITE_APP_URL ?? window.location.origin}/dashboard`,
           },
         });
-        return error ? { error: error.message } : {};
+        return error
+          ? {
+              error:
+                "The sign-in link could not be sent. Check the email and try again later.",
+            }
+          : {};
       },
       async signOut() {
         await supabase?.auth.signOut({ scope: "local" });

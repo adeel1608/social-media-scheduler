@@ -18,11 +18,13 @@ const requiredTables = [
   "oauth_states",
   "media_assets",
   "posts",
+  "post_media",
   "post_targets",
   "publish_attempts",
   "analytics_snapshots",
   "email_events",
   "audit_log",
+  "rate_limit_buckets",
 ];
 const missingTables = requiredTables.filter(
   (table) => !sql.includes(`create table public.${table}`),

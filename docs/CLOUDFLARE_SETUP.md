@@ -13,6 +13,13 @@ Verified against current Workers, Cron, Queues, and Wrangler documentation on 20
 9. Confirm the queue consumer has `max_retries = 0`. Provider failures are recorded and acknowledged instead of automatically redelivered.
 10. For TikTok pull-based photo publication, verify the Worker `/delivery/` URL prefix or domain in TikTok. It must remain HTTPS and redirect-free while TikTok fetches it.
 11. Verify `/health`, sanitized logs, and analytics. Logs must contain request IDs and safe messages only.
+12. For the optional manual GitHub deployment workflow, configure the
+    `CLOUDFLARE_PAGES_PROJECT` and `CLOUDFLARE_WORKER_NAME` variables with the
+    clone owner's exact resource names. The workflow resolves its pinned Wrangler from the Worker
+    package but runs Pages from the repository root so it does not consume the
+    Worker's `wrangler.toml`. It validates configuration before either deploy
+    step and remains gated by the `production` environment plus typed
+    confirmation.
 
 The cleanup cron rechecks every selected target before deleting successful media after seven days. It retains failed, ambiguous, incomplete, and pending media. Expired UploadThing reservations are released only after the official deletion API confirms deletion or absence.
 

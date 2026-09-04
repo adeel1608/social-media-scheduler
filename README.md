@@ -4,7 +4,7 @@ Postline is an open-source, self-hosted scheduler for one owner to prepare, sche
 
 It is not a centrally hosted SaaS. Each person clones and deploys a separate private instance with their own Supabase, Cloudflare, UploadThing, Resend, Meta, TikTok, and Google credentials.
 
-> Status: the application, official-API adapters, migrations, security controls, tests, and deployment configuration are implemented and mock-tested. In Adeel's owner deployment, Supabase migration 003 is applied, but the frontend is undeployed and only an inert HTTP-503 Worker bootstrap serves traffic; the real Worker version remains inactive. Authentication/RLS has not been live-tested end to end, and no social-platform connection or publication has been live-verified. Public posting remains deliberately blocked until the relevant provider approvals and `LIVE_TEST_CONFIRM=true` are configured.
+> Status: the application, official-API adapters, migrations, security controls, tests, and deployment configuration are implemented and mock-tested. In Adeel's owner deployment, Supabase migration 003 is applied and the public Pages routes are deployed, while only an inert HTTP-503 Worker bootstrap serves API traffic; the real Worker version remains inactive. Authentication/RLS has not been live-tested end to end, and no social-platform connection or publication has been live-verified. Public posting remains deliberately blocked until the relevant provider approvals and `LIVE_TEST_CONFIRM=true` are configured.
 
 ![Postline analytics dashboard](docs/screenshots/dashboard.png)
 
@@ -110,7 +110,7 @@ Source media is eligible for deletion seven days after every target succeeds. An
 | Supabase database schema                 | Ordered migrations and static validation          | Migration 003 applied                                                            |
 | Supabase authentication and RLS behavior | Implemented and covered by migration/static tests | Not live-tested end to end                                                       |
 | Cloudflare Worker, Cron, and Queues      | Worker dry-run and local logic verified           | Queues exist; safe HTTP-503 bootstrap is active; real Worker version is inactive |
-| React/Vite frontend                      | Production build and browser E2E verified         | Pages URL reserved; production frontend undeployed                               |
+| React/Vite frontend                      | Production build and browser E2E verified         | Pages deployment serves the public and legal routes                              |
 | UploadThing media operations             | SDK integration mock-tested                       | No live storage workflow verified                                                |
 | Resend failure email                     | Deduplication and delivery logic mock-tested      | No live sender delivery verified                                                 |
 

@@ -65,7 +65,7 @@ export function LoginPage() {
           </div>
           <p className="eyebrow">OWNER ACCESS</p>
           <h2>Welcome back</h2>
-          <p className="muted">
+          <p className="muted" id="login-help">
             Enter the owner email configured for this installation. No password
             needed.
           </p>
@@ -79,11 +79,13 @@ export function LoginPage() {
               placeholder="you@example.com"
               required
               autoComplete="email"
+              aria-describedby="login-help"
             />
             <button
               className="primary-button full"
               type="submit"
               disabled={sending}
+              aria-busy={sending}
             >
               {sending ? "Sending link…" : "Send magic link"}
               <ArrowRight size={17} />

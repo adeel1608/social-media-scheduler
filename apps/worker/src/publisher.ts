@@ -9,6 +9,7 @@ import {
 import { adapterFor } from "./adapters";
 import { SupabaseRest } from "./database";
 import type { Env, QueueJob } from "./env";
+import { logWorkerError } from "./logging";
 import { sendFailureEmailOnce } from "./notifications";
 import { fetchMediaBody, fetchMediaRange, signedDeliveryUrl } from "./storage";
 
@@ -193,15 +194,8 @@ async function recordFinal(
   });
   try {
     await updateMediaRetentionForPost(db, target.post_id);
-  } catch (error) {
-    console.error(
-      JSON.stringify({
-        level: "error",
-        message: "media_retention_update_failed",
-        targetId: target.id,
-        detail: error instanceof Error ? error.message : "database_error",
-      }),
-    );
+  } catch {
+    logWorkerError("media_retention_update_failed", { targetId: target.id });
   }
   if (status === "failed" || status === "needs_review") {
     await sendFailureEmailOnce(env, {
@@ -614,12 +608,11 @@ async function continueUpload(
       },
       body: sourceBody,
     });
-  } catch (error) {
+  } catch {
     throw {
       name: "NetworkError",
       code: "upload_network_error",
-      message:
-        error instanceof Error ? error.message : "Resumable upload failed",
+      message: "Resumable upload request failed",
       ambiguous: true,
     };
   }

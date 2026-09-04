@@ -75,3 +75,16 @@ test("legal policies are public, complete, and contactable", async ({
   await expect(contact).toHaveAttribute("aria-label", /^Email .+ at .+@.+$/);
   await expect(contact).toHaveAttribute("href", /^mailto:.+@.+$/);
 });
+
+test("keyboard focus remains visible on nested queue controls", async ({
+  page,
+}) => {
+  await page.goto("/queue");
+  const search = page.getByLabel("Search queue");
+  await search.focus();
+  await expect(search.locator("..")).toHaveCSS("outline-style", "solid");
+
+  const platform = page.getByLabel("Filter by platform");
+  await platform.focus();
+  await expect(platform.locator("..")).toHaveCSS("outline-style", "solid");
+});

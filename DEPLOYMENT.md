@@ -115,12 +115,28 @@ Build and deploy to a static host. Example with Cloudflare Pages:
 
 ```bash
 corepack pnpm --filter @scheduler/web build
-corepack pnpm exec wrangler pages deploy apps/web/dist --project-name postline
+corepack pnpm --dir apps/worker exec wrangler pages deploy apps/web/dist --cwd ../.. --project-name YOUR_PAGES_PROJECT
 ```
 
 Configure SPA fallback, HTTPS, and the final custom domain. Update Supabase URL configuration and provider callback URIs if the canonical URL changes.
 
 ## Verification
+
+During an inert-bootstrap setup, the following read-only check verifies all
+public policy routes without following redirects and confirms that the Worker
+still returns the explicitly expected unavailable status. It never reads
+secrets or mutates infrastructure:
+
+```bash
+POSTLINE_PUBLIC_APP_URL=https://YOUR_WEB_HOST \
+POSTLINE_PUBLIC_WORKER_URL=https://YOUR_WORKER_HOST \
+POSTLINE_EXPECTED_WORKER_STATUS=503 \
+corepack pnpm production:inspect
+```
+
+Use environment-variable syntax appropriate to the local shell. After an
+intentional Worker activation, choose the expected status that matches the
+reviewed endpoint instead of mechanically retaining `503`.
 
 ```bash
 curl -fsS https://YOUR_WORKER_HOST/health
@@ -140,4 +156,18 @@ Do not enable `LIVE_TEST_CONFIRM` merely to make `/health` green. No social publ
 
 ## CI deployment
 
-`.github/workflows/deploy.yml` is manual (`workflow_dispatch`) and requires protected environment secrets. GitHub Actions is never the production scheduler.
+`.github/workflows/deploy.yml` is manual (`workflow_dispatch`), requires the
+operator to type `DEPLOY`, and uses the protected `production` environment. Set
+the non-secret `CLOUDFLARE_PAGES_PROJECT`, `CLOUDFLARE_WORKER_NAME`, `APP_URL`,
+`API_URL`, `SUPABASE_URL`, `OPERATOR_NAME`, and `PUBLIC_CONTACT_EMAIL`
+repository/environment variables.
+Set only the Cloudflare deployment credentials and browser-safe Supabase anon
+key in the workflow's secret store. The preflight rejects missing, malformed,
+or placeholder values without printing them. GitHub Actions is never the
+production scheduler, and merges do not run this deployment workflow.
+
+Create and protect the GitHub `production` environment before adding its
+configuration: restrict deployment branches to the default branch and require
+the intended human reviewers where the repository plan supports that rule. The
+workflow independently rejects a run whose source ref is not the default
+branch.

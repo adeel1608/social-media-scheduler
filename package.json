@@ -25,6 +25,9 @@
     "setup-doctor": "node scripts/setup-doctor.mjs",
     "secrets:scan": "node scripts/secret-scan.mjs",
     "audit": "corepack pnpm audit --audit-level high",
+    "audit:ci": "node scripts/audit-with-retry.mjs",
+    "deploy:validate": "node scripts/validate-deploy-config.mjs",
+    "production:inspect": "node scripts/inspect-public-deployment.mjs",
     "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm build:verify && corepack pnpm db:validate && corepack pnpm secrets:scan"
   },
   "devDependencies": {

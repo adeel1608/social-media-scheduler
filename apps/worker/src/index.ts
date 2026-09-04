@@ -21,6 +21,7 @@ import {
 } from "./env";
 import { ownerDatabase, SupabaseRest } from "./database";
 import oauthRoutes from "./oauth-routes";
+import { logWorkerError } from "./logging";
 import { processQueueJob, updateMediaRetentionForPost } from "./publisher";
 import {
   ACTIVE_MEDIA_LIMIT_BYTES,
@@ -41,6 +42,22 @@ app.use("*", async (c, next) => {
   await next();
 });
 
+app.use("*", async (c, next) => {
+  if (c.req.path === "/health" || c.env.ENVIRONMENT === "development") {
+    return next();
+  }
+  if (!configurationStatus(c.env).configured) {
+    return c.json(
+      {
+        error: "configuration_required",
+        message: "Production configuration is incomplete.",
+      },
+      503,
+    );
+  }
+  return next();
+});
+
 app.use(
   "/api/*",
   cors({
@@ -59,14 +76,9 @@ app.use(
   }),
 );
 
-app.onError((error, c) => {
-  console.error(
-    JSON.stringify({
-      level: "error",
-      message: error.message,
-      requestId: c.req.header("CF-Ray"),
-    }),
-  );
+app.onError((_error, c) => {
+  const requestId = c.req.header("CF-Ray");
+  logWorkerError("request_failed", requestId ? { requestId } : {});
   return c.json(
     {
       error: "request_failed",
@@ -78,7 +90,7 @@ app.onError((error, c) => {
 
 app.get("/health", (c) => {
   const status = configurationStatus(c.env);
-  const healthy = c.env.ENVIRONMENT !== "production" || status.configured;
+  const healthy = c.env.ENVIRONMENT === "development" || status.configured;
   return c.json(
     {
       status: healthy ? "ok" : "configuration_required",
@@ -690,7 +702,7 @@ const worker = {
           mode: "publish",
           requestedAt: new Date().toISOString(),
         });
-      } catch (error) {
+      } catch {
         // No provider request exists yet, so the next cron may safely dispatch again.
         await db.update(`post_targets?id=eq.${target.id}`, {
           status: "scheduled",
@@ -699,14 +711,7 @@ const worker = {
           lease_owner: null,
           lease_expires_at: null,
         });
-        console.error(
-          JSON.stringify({
-            level: "error",
-            message:
-              error instanceof Error ? error.message : "queue_dispatch_failed",
-            targetId: target.id,
-          }),
-        );
+        logWorkerError("queue_dispatch_failed", { targetId: target.id });
       }
     }
     const scheduledMinute = new Date(controller.scheduledTime).getUTCMinutes();
@@ -721,15 +726,10 @@ const worker = {
     for (const message of batch.messages) {
       try {
         await processQueueJob(env, message.body);
-      } catch (error) {
-        console.error(
-          JSON.stringify({
-            level: "error",
-            message:
-              error instanceof Error ? error.message : "queue_job_failed",
-            targetId: message.body.targetId,
-          }),
-        );
+      } catch {
+        logWorkerError("queue_job_failed", {
+          targetId: message.body.targetId,
+        });
       } finally {
         // API failures are recorded. Infrastructure delivery is acknowledged and never automatically retried.
         message.ack();
@@ -850,4 +850,5 @@ async function deleteMediaFromUploadThing(
   }
 }
 
+export { app };
 export default worker;
