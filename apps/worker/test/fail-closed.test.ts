@@ -43,4 +43,18 @@ describe("production HTTP fail-closed gate", () => {
       });
     }
   });
+
+  it("also fails closed for an unrecognized environment", async () => {
+    const response = await app.request(
+      "https://worker.example.test/api/setup",
+      undefined,
+      { ...incompleteProduction, ENVIRONMENT: "staging" },
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "configuration_required",
+      message: "Production configuration is incomplete.",
+    });
+  });
 });

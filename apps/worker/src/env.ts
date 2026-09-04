@@ -40,6 +40,7 @@ export interface QueueJob {
 
 export const requiredProductionEnv: Array<keyof Env> = [
   "PUBLISH_QUEUE",
+  "ENVIRONMENT",
   "APP_URL",
   "WORKER_PUBLIC_URL",
   "OWNER_EMAIL",
@@ -95,6 +96,13 @@ function isBasicEmail(value: string): boolean {
 export function configurationStatus(env: Env) {
   const missing = requiredProductionEnv.filter((key) => !env[key]);
   const invalid: Array<keyof Env> = [];
+  if (
+    env.ENVIRONMENT &&
+    env.ENVIRONMENT !== "development" &&
+    env.ENVIRONMENT !== "production"
+  ) {
+    invalid.push("ENVIRONMENT");
+  }
   if (env.ENVIRONMENT === "production") {
     for (const key of requiredProductionEnv) {
       const value = env[key];
@@ -136,6 +144,7 @@ export function configurationStatus(env: Env) {
     try {
       const url = new URL(value);
       const localHttp =
+        env.ENVIRONMENT === "development" &&
         url.protocol === "http:" &&
         (url.hostname === "localhost" || url.hostname === "127.0.0.1");
       if (url.protocol !== "https:" && !localHttp) invalid.push(key);
@@ -239,7 +248,7 @@ function senderEmailFrom(value: string): string | undefined {
 
 export function assertProductionConfigured(env: Env): void {
   const status = configurationStatus(env);
-  if (env.ENVIRONMENT === "production" && !status.configured) {
+  if (env.ENVIRONMENT !== "development" && !status.configured) {
     throw new Error(
       `Production configuration incomplete: missing [${status.missing.join(", ")}], invalid [${status.invalid.join(", ")}]`,
     );

@@ -3,31 +3,61 @@ import { readFile } from "node:fs/promises";
 const env = { ...process.env, ...(await loadDotEnv()) };
 
 const checks = [
+  ["VITE_APP_URL", (value) => isRuntimeOrigin(value) && value === env.APP_URL],
+  [
+    "VITE_API_URL",
+    (value) => isRuntimeOrigin(value) && value === env.WORKER_PUBLIC_URL,
+  ],
+  [
+    "VITE_SUPABASE_URL",
+    (value) => isRuntimeOrigin(value) && value === env.SUPABASE_URL,
+  ],
+  [
+    "VITE_SUPABASE_ANON_KEY",
+    (value) => isCredential(value) && value === env.SUPABASE_ANON_KEY,
+  ],
+  ["VITE_DEMO_MODE", isBoolean],
   ["VITE_OPERATOR_NAME", isOperatorName],
   ["VITE_PUBLIC_CONTACT_EMAIL", isEmail],
-  ["APP_URL", isUrl],
-  ["WORKER_PUBLIC_URL", isUrl],
-  ["OWNER_EMAIL", isEmail],
+  ["APP_URL", isRuntimeOrigin],
+  ["WORKER_PUBLIC_URL", isRuntimeOrigin],
+  ["OWNER_EMAIL", (value) => isEmail(value) && value === value.toLowerCase()],
   ["NOTIFICATION_EMAIL", isEmail],
   ["TIMEZONE", isTimeZone],
-  ["SUPABASE_URL", isHttpsUrl],
-  ["SUPABASE_ANON_KEY", isPresent],
-  ["SUPABASE_SERVICE_ROLE_KEY", isPresent],
+  ["LIVE_TEST_CONFIRM", isBoolean],
+  ["ENVIRONMENT", (value) => ["development", "production"].includes(value)],
+  ["SUPABASE_URL", isRuntimeOrigin],
+  ["SUPABASE_ANON_KEY", isCredential],
+  ["SUPABASE_SERVICE_ROLE_KEY", isCredential],
   ["TOKEN_ENCRYPTION_KEY", isEncryptionKey],
-  ["CLOUDFLARE_ACCOUNT_ID", isIdentifier],
-  ["CLOUDFLARE_API_TOKEN", isPresent],
+  ["TOKEN_ENCRYPTION_KEY_VERSION", isVersion],
+  ["CLOUDFLARE_ACCOUNT_ID", (value) => /^[a-f0-9]{32}$/.test(value)],
+  ["CLOUDFLARE_API_TOKEN", isCredential],
   ["UPLOADTHING_TOKEN", isUploadThingToken],
-  ["RESEND_API_KEY", (value) => /^re_/.test(value)],
-  ["RESEND_FROM", isPresent],
+  ["RESEND_API_KEY", (value) => /^re_\S{8,}$/.test(value)],
+  ["RESEND_FROM", isResendSender],
   ["META_APP_ID", isPresent],
   ["META_APP_SECRET", isPresent],
-  ["META_REDIRECT_URI", isUrl],
+  ["META_GRAPH_VERSION", (value) => /^v[1-9][0-9]{0,2}\.0$/.test(value)],
+  [
+    "META_REDIRECT_URI",
+    (value) => isExactCallback(value, "/api/oauth/instagram/callback"),
+  ],
+  ["META_APP_REVIEW_APPROVED", isBoolean],
   ["TIKTOK_CLIENT_KEY", isPresent],
   ["TIKTOK_CLIENT_SECRET", isPresent],
-  ["TIKTOK_REDIRECT_URI", isUrl],
+  [
+    "TIKTOK_REDIRECT_URI",
+    (value) => isExactCallback(value, "/api/oauth/tiktok/callback"),
+  ],
+  ["TIKTOK_CONTENT_POSTING_AUDITED", isBoolean],
   ["GOOGLE_CLIENT_ID", isPresent],
   ["GOOGLE_CLIENT_SECRET", isPresent],
-  ["GOOGLE_REDIRECT_URI", isUrl],
+  [
+    "GOOGLE_REDIRECT_URI",
+    (value) => isExactCallback(value, "/api/oauth/youtube/callback"),
+  ],
+  ["YOUTUBE_API_AUDIT_APPROVED", isBoolean],
 ];
 
 console.log("Postline setup doctor (values are never displayed)\n");
@@ -93,6 +123,8 @@ const liveReady =
   missing === 0 &&
   invalid === 0 &&
   approvalsReady &&
+  env.ENVIRONMENT === "production" &&
+  env.VITE_DEMO_MODE === "false" &&
   env.LIVE_TEST_CONFIRM === "true";
 console.log(
   `\n${liveReady ? "LIVE PUBLISHING READY" : "LIVE PUBLISHING NOT READY"}`,
@@ -196,17 +228,40 @@ function isPlaceholderContact(value) {
     domain.endsWith(".invalid")
   );
 }
-function isUrl(value) {
+function isRuntimeOrigin(value) {
   try {
-    new URL(value);
-    return true;
+    const url = new URL(value);
+    const localHttp =
+      env.ENVIRONMENT === "development" &&
+      url.protocol === "http:" &&
+      (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+    return (
+      (url.protocol === "https:" || localHttp) &&
+      value === url.origin &&
+      url.pathname === "/" &&
+      !url.search &&
+      !url.hash &&
+      !url.username &&
+      !url.password &&
+      (env.ENVIRONMENT !== "production" || !url.port)
+    );
   } catch {
     return false;
   }
 }
-function isHttpsUrl(value) {
+
+function isExactCallback(value, path) {
   try {
-    return new URL(value).protocol === "https:";
+    const workerUrl = env.WORKER_PUBLIC_URL;
+    if (!isRuntimeOrigin(workerUrl)) return false;
+    const url = new URL(value);
+    return (
+      value === new URL(path, workerUrl).href &&
+      !url.search &&
+      !url.hash &&
+      !url.username &&
+      !url.password
+    );
   } catch {
     return false;
   }
@@ -219,8 +274,14 @@ function isTimeZone(value) {
     return false;
   }
 }
-function isIdentifier(value) {
-  return /^[a-zA-Z0-9_-]{3,128}$/.test(value);
+function isCredential(value) {
+  return value.length >= 20 && value.length <= 4096 && !/\s/.test(value);
+}
+function isBoolean(value) {
+  return value === "true" || value === "false";
+}
+function isVersion(value) {
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(value);
 }
 function isEncryptionKey(value) {
   try {
@@ -245,4 +306,15 @@ function isUploadThingToken(value) {
   } catch {
     return false;
   }
+}
+function isResendSender(value) {
+  const trimmed = value.trim();
+  const bracketed = trimmed.match(/^[^<>\r\n]{1,100}<([^<>]+)>$/);
+  const email = (bracketed?.[1] ?? trimmed).trim().toLowerCase();
+  if (!isEmail(email)) return false;
+  if (!email.endsWith("@resend.dev")) return true;
+  return (
+    email === "onboarding@resend.dev" &&
+    env.OWNER_EMAIL?.toLowerCase() === env.NOTIFICATION_EMAIL?.toLowerCase()
+  );
 }

@@ -43,7 +43,7 @@ app.use("*", async (c, next) => {
 });
 
 app.use("*", async (c, next) => {
-  if (c.req.path === "/health" || c.env.ENVIRONMENT !== "production") {
+  if (c.req.path === "/health" || c.env.ENVIRONMENT === "development") {
     return next();
   }
   if (!configurationStatus(c.env).configured) {
@@ -90,7 +90,7 @@ app.onError((_error, c) => {
 
 app.get("/health", (c) => {
   const status = configurationStatus(c.env);
-  const healthy = c.env.ENVIRONMENT !== "production" || status.configured;
+  const healthy = c.env.ENVIRONMENT === "development" || status.configured;
   return c.json(
     {
       status: healthy ? "ok" : "configuration_required",

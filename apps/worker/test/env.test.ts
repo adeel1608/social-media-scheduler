@@ -7,7 +7,58 @@ import {
 } from "../src/env";
 
 describe("fail-closed production configuration", () => {
-  it("reports missing configuration and throws only in production", () => {
+  it("accepts a complete production-shaped configuration", () => {
+    const uploadThingToken = btoa(
+      JSON.stringify({
+        apiKey: `sk_live_${"x".repeat(48)}`,
+        appId: "postline123",
+        regions: ["syd1"],
+      }),
+    );
+    const env = {
+      PUBLISH_QUEUE: {},
+      ENVIRONMENT: "production",
+      APP_URL: "https://postline.dev",
+      WORKER_PUBLIC_URL: "https://api.postline.dev",
+      OWNER_EMAIL: "owner@postline.dev",
+      NOTIFICATION_EMAIL: "owner@postline.dev",
+      TIMEZONE: "Australia/Melbourne",
+      LIVE_TEST_CONFIRM: "false",
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_ANON_KEY: "sb_publishable_public-key-sentinel",
+      SUPABASE_SERVICE_ROLE_KEY: "service-role-sentinel",
+      TOKEN_ENCRYPTION_KEY: btoa(String.fromCharCode(...new Uint8Array(32))),
+      TOKEN_ENCRYPTION_KEY_VERSION: "v1",
+      UPLOADTHING_TOKEN: uploadThingToken,
+      RESEND_API_KEY: "resend-key-sentinel",
+      RESEND_FROM: "Postline <onboarding@resend.dev>",
+      META_APP_ID: "meta-app-id",
+      META_APP_SECRET: "meta-secret",
+      META_REDIRECT_URI:
+        "https://api.postline.dev/api/oauth/instagram/callback",
+      META_GRAPH_VERSION: "v23.0",
+      META_APP_REVIEW_APPROVED: "false",
+      TIKTOK_CLIENT_KEY: "tiktok-client-key",
+      TIKTOK_CLIENT_SECRET: "tiktok-secret",
+      TIKTOK_REDIRECT_URI: "https://api.postline.dev/api/oauth/tiktok/callback",
+      TIKTOK_CONTENT_POSTING_AUDITED: "false",
+      GOOGLE_CLIENT_ID: "google-client-id",
+      GOOGLE_CLIENT_SECRET: "google-secret",
+      GOOGLE_REDIRECT_URI:
+        "https://api.postline.dev/api/oauth/youtube/callback",
+      YOUTUBE_API_AUDIT_APPROVED: "false",
+    } as Env;
+
+    expect(configurationStatus(env)).toMatchObject({
+      configured: true,
+      missing: [],
+      invalid: [],
+      liveTestSafetyEnabled: false,
+    });
+    expect(() => assertProductionConfigured(env)).not.toThrow();
+  });
+
+  it("reports missing configuration and permits only an explicit development bypass", () => {
     const env = {
       ENVIRONMENT: "production",
       META_APP_REVIEW_APPROVED: "false",
@@ -22,6 +73,9 @@ describe("fail-closed production configuration", () => {
     expect(() =>
       assertProductionConfigured({ ...env, ENVIRONMENT: "development" }),
     ).not.toThrow();
+    expect(() =>
+      assertProductionConfigured({ ...env, ENVIRONMENT: "staging" }),
+    ).toThrow("Production configuration incomplete");
   });
 
   it("rejects malformed encryption keys and non-HTTPS production origins", () => {
@@ -43,6 +97,18 @@ describe("fail-closed production configuration", () => {
         "WORKER_PUBLIC_URL",
         "UPLOADTHING_TOKEN",
       ]),
+    );
+  });
+
+  it("rejects local HTTP origins outside explicit development", () => {
+    const status = configurationStatus({
+      ENVIRONMENT: "production",
+      APP_URL: "http://localhost",
+      WORKER_PUBLIC_URL: "http://127.0.0.1",
+    } as Env);
+
+    expect(status.invalid).toEqual(
+      expect.arrayContaining(["APP_URL", "WORKER_PUBLIC_URL"]),
     );
   });
 
