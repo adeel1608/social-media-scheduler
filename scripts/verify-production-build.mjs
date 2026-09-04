@@ -56,6 +56,20 @@ for (const file of bundleFiles) {
   }
 }
 
+const headers = await readFile(resolve(distDirectory, "_headers"), "utf8");
+if (/connect-src[^;\n]*\shttps:(?:\s|;)/.test(headers)) {
+  throw new Error("Production Pages CSP permits arbitrary HTTPS connections");
+}
+for (const expectedOrigin of [
+  "https://postline-ci.workers.dev",
+  "https://postline-ci.supabase.co",
+  "https://*.ingest.uploadthing.com",
+]) {
+  if (!headers.includes(expectedOrigin)) {
+    throw new Error(`Production Pages CSP is missing ${expectedOrigin}`);
+  }
+}
+
 console.log(
   `Production web build passed with validated public configuration; ${bundleFiles.length} output files contain none of ${Object.keys(serverSecretSentinels).length} server-secret sentinels.`,
 );

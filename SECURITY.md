@@ -21,7 +21,7 @@ Generate a 32-byte base64 encryption key locally. To rotate, deploy code able to
 - State-changing database RPCs enforce owner identity/RLS again.
 - Sensitive route rate limiting is backed by `rate_limit_buckets`; deployments should also add Cloudflare WAF/rate-limit rules to OAuth and upload endpoints.
 - Email OTP requests are spaced by at least 60 seconds in the local Auth configuration. Hosted deployments must retain that minimum, review Supabase Auth rate limits, and add CAPTCHA when appropriate for their public threat model.
-- Security headers deny framing, MIME sniffing, sensitive browser capabilities and unexpected origins. Set CSP connect sources to actual production hosts.
+- Security headers deny framing, MIME sniffing, sensitive browser capabilities, and unexpected origins. The production build generates a Pages CSP whose connection sources are limited to the configured Worker and Supabase origins plus UploadThing's documented regional ingest hosts.
 - UploadThing provider URLs are validated against the app-specific official hostname (plus the documented legacy host) and exact provider file key before storage or fetch. Redirects, credentials, unexpected ports, arbitrary hosts and malformed ranges are rejected. Signed delivery URLs resolve a media UUID server-side and cannot proxy arbitrary destinations.
 
 ## Publishing safety
