@@ -46,6 +46,7 @@ function account(
     username: `${platform}-owner`,
     connection_status: "connected",
     approval_state: "pending",
+    stored_approval_state: "pending",
     requires_reconnect: false,
     metadata: {},
     ...overrides,
@@ -139,8 +140,27 @@ describe("authoritative Connected Accounts UI", () => {
     await screen.findByText("@instagram-owner");
     expect(screen.getByText("@tiktok-owner")).toBeTruthy();
     expect(screen.getByText("@youtube-owner")).toBeTruthy();
-    expect(screen.getByText("Approval recorded by the server")).toBeTruthy();
+    expect(
+      screen.getByText("Current Worker approval flag is enabled"),
+    ).toBeTruthy();
     expect(screen.getByText("Expired - reconnect required")).toBeTruthy();
+  });
+
+  it("shows current false launch gates despite stale stored approvals", async () => {
+    mocks.apiRequest.mockResolvedValue({
+      data: (["instagram", "tiktok", "youtube"] as const).map((platform) =>
+        account(platform, {
+          approval_state: "pending",
+          stored_approval_state: "approved",
+        }),
+      ),
+    });
+    render(<AccountsPage />);
+
+    expect(
+      await screen.findAllByText("Current Worker approval flag is false"),
+    ).toHaveLength(3);
+    expect(screen.queryByText(/approval recorded by the server/i)).toBeNull();
   });
 
   it("treats the callback query as notification, refetches, and removes it", async () => {

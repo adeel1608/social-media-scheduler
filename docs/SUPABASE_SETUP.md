@@ -56,12 +56,16 @@ values ('OWNER_AUTH_USER_UUID', lower('OWNER_EMAIL'));
    low-volume owner authentication and may deliver less reliably than a
    dedicated transactional provider. Clone owners must use their own SMTP
    service and credentials. See [EMAIL_SETUP.md](EMAIL_SETUP.md).
-10. Review Supabase Auth rate limits and enable CAPTCHA on sign-in when the
-    public deployment needs stronger bot resistance. CAPTCHA credentials belong
-    in Supabase and the browser's documented public CAPTCHA configuration;
-    never improvise a server secret as a `VITE_` value.
+10. In Cloudflare Dashboard → Turnstile → Add widget, create a managed widget
+    restricted to the exact production Pages/custom hostname. Then open
+    Supabase Dashboard → Settings → Authentication → Bot and Abuse Protection,
+    enable CAPTCHA protection, select Cloudflare Turnstile, and paste the
+    Turnstile secret key. Put only the public Site Key in the production GitHub
+    environment variable `VITE_TURNSTILE_SITE_KEY`. The login sends the returned
+    browser token to `signInWithOtp`; the Turnstile secret belongs only in
+    Supabase and must never be a `VITE_` value.
 
 Worker failed-post notification is separate from Supabase Auth SMTP and uses
 Resend. Configuring one does not configure the other.
 
-Official sources: [passwordless email](https://supabase.com/docs/guides/auth/auth-email-passwordless), [production checklist](https://supabase.com/docs/guides/deployment/going-into-prod), [custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp), [Gmail SMTP](https://supabase.com/docs/guides/troubleshooting/using-google-smtp-with-supabase-custom-smtp-ZZzU4Y), [CAPTCHA](https://supabase.com/docs/guides/auth/auth-captcha), [redirect URLs](https://supabase.com/docs/guides/auth/redirect-urls), [RLS](https://supabase.com/docs/guides/database/postgres/row-level-security), and [CLI migrations](https://supabase.com/docs/guides/local-development/cli/getting-started).
+Official sources: [passwordless email](https://supabase.com/docs/guides/auth/auth-email-passwordless), [production checklist](https://supabase.com/docs/guides/deployment/going-into-prod), [custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp), [Gmail SMTP](https://supabase.com/docs/guides/troubleshooting/using-google-smtp-with-supabase-custom-smtp-ZZzU4Y), [Supabase CAPTCHA](https://supabase.com/docs/guides/auth/auth-captcha), [Cloudflare Turnstile widget configuration](https://developers.cloudflare.com/turnstile/get-started/widget-management/dashboard/), [redirect URLs](https://supabase.com/docs/guides/auth/redirect-urls), [RLS](https://supabase.com/docs/guides/database/postgres/row-level-security), and [CLI migrations](https://supabase.com/docs/guides/local-development/cli/getting-started).

@@ -23,7 +23,8 @@ export interface ConnectedAccountSummary {
   username: string | null;
   connection_status:
     "connected" | "expired" | "revoked" | "error" | "disconnected";
-  approval_state: "approved" | "pending" | "not_required" | "rejected";
+  approval_state: "approved" | "pending";
+  stored_approval_state: "approved" | "pending" | "not_required" | "rejected";
   requires_reconnect: boolean;
   metadata: {
     displayName?: string;
@@ -68,10 +69,8 @@ function accountStatus(account: ConnectedAccountSummary): string {
 
 function approvalStatus(account: ConnectedAccountSummary): string {
   return {
-    approved: "Approval recorded by the server",
-    pending: "Provider approval pending",
-    not_required: "No provider review required",
-    rejected: "Provider approval rejected",
+    approved: "Current Worker approval flag is enabled",
+    pending: "Current Worker approval flag is false",
   }[account.approval_state];
 }
 
@@ -368,8 +367,7 @@ export function AccountsPage() {
                     const connected = account.connection_status === "connected";
                     const approval = approvalStatus(account);
                     const approvalConfirmed =
-                      account.approval_state === "approved" ||
-                      account.approval_state === "not_required";
+                      account.approval_state === "approved";
                     return (
                       <section className="connected-account" key={account.id}>
                         <h2>
@@ -404,7 +402,7 @@ export function AccountsPage() {
                               <Clock3 size={16} />
                             )}
                             <div>
-                              <small>PROVIDER REVIEW</small>
+                              <small>CURRENT LAUNCH GATE</small>
                               <strong>{approval}</strong>
                             </div>
                           </span>

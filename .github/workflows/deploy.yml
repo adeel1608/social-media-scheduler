@@ -39,6 +39,7 @@ jobs:
           VITE_API_URL: ${{ vars.API_URL }}
           VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
           VITE_DEMO_MODE: "false"
           VITE_OPERATOR_NAME: ${{ vars.OPERATOR_NAME }}
           VITE_PUBLIC_CONTACT_EMAIL: ${{ vars.PUBLIC_CONTACT_EMAIL }}
@@ -52,6 +53,7 @@ jobs:
           VITE_API_URL: ${{ vars.API_URL }}
           VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
           VITE_DEMO_MODE: "false"
           VITE_OPERATOR_NAME: ${{ vars.OPERATOR_NAME }}
           VITE_PUBLIC_CONTACT_EMAIL: ${{ vars.PUBLIC_CONTACT_EMAIL }}

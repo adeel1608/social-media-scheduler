@@ -60,6 +60,7 @@ jobs:
           VITE_API_URL: https://postline-ci.workers.dev
           VITE_SUPABASE_URL: https://postline-ci.supabase.co
           VITE_SUPABASE_ANON_KEY: sb_publishable_CI_ONLY_NOT_A_CREDENTIAL_1234567890
+          VITE_TURNSTILE_SITE_KEY: 1x00000000000000000000AA
           VITE_OPERATOR_NAME: Postline CI
           VITE_PUBLIC_CONTACT_EMAIL: ci-contact@postline.dev
       - run: corepack pnpm exec playwright install --with-deps chromium

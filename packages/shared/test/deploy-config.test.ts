@@ -12,6 +12,7 @@ const validEnvironment = {
   VITE_API_URL: "https://postline-owner.workers.dev",
   VITE_SUPABASE_URL: "https://owner-project.supabase.co",
   VITE_SUPABASE_ANON_KEY: "sb_publishable_owner_public_key_sentinel",
+  VITE_TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
   VITE_DEMO_MODE: "false",
   VITE_OPERATOR_NAME: "Owner Postline",
   VITE_PUBLIC_CONTACT_EMAIL: "owner@postline.dev",
@@ -32,6 +33,7 @@ describe("production deployment preflight", () => {
       ...validEnvironment,
       CLOUDFLARE_API_TOKEN: "",
       VITE_SUPABASE_ANON_KEY: "",
+      VITE_TURNSTILE_SITE_KEY: "",
     });
 
     expect(result.valid).toBe(false);
@@ -39,9 +41,19 @@ describe("production deployment preflight", () => {
       expect.arrayContaining([
         "CLOUDFLARE_API_TOKEN is missing",
         "VITE_SUPABASE_ANON_KEY is missing",
+        "VITE_TURNSTILE_SITE_KEY is missing",
       ]),
     );
     expect(JSON.stringify(result)).not.toContain("cloudflare-token-sentinel");
+  });
+
+  it("rejects a malformed Turnstile public site key", () => {
+    const result = validateDeployConfiguration({
+      ...validEnvironment,
+      VITE_TURNSTILE_SITE_KEY: "invalid key with spaces",
+    });
+
+    expect(result.errors).toContain("VITE_TURNSTILE_SITE_KEY is malformed");
   });
 
   it("rejects placeholders, unsafe origins, and absent confirmation", () => {

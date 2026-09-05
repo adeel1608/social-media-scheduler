@@ -16,6 +16,7 @@ const checks = [
     "VITE_SUPABASE_ANON_KEY",
     (value) => isCredential(value) && value === env.SUPABASE_ANON_KEY,
   ],
+  ["VITE_TURNSTILE_SITE_KEY", isTurnstileSiteKey],
   ["VITE_DEMO_MODE", isBoolean],
   ["VITE_OPERATOR_NAME", isOperatorName],
   ["VITE_PUBLIC_CONTACT_EMAIL", isEmail],
@@ -276,6 +277,9 @@ function isTimeZone(value) {
 }
 function isCredential(value) {
   return value.length >= 20 && value.length <= 4096 && !/\s/.test(value);
+}
+function isTurnstileSiteKey(value) {
+  return value.length >= 20 && value.length <= 100 && !/\s/.test(value);
 }
 function isBoolean(value) {
   return value === "true" || value === "false";

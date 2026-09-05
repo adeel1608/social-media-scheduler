@@ -66,6 +66,7 @@ describe("public production configuration", () => {
     VITE_API_URL: "https://postline-api.workers.dev",
     VITE_SUPABASE_URL: "https://project.supabase.co",
     VITE_SUPABASE_ANON_KEY: "sb_publishable_abcdefghijklmnopqrstuvwxyz",
+    VITE_TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
     VITE_OPERATOR_NAME: "Independent Postline",
     VITE_PUBLIC_CONTACT_EMAIL: "legal@independent-postline.dev",
   };
@@ -76,6 +77,7 @@ describe("public production configuration", () => {
       "VITE_API_URL",
       "VITE_SUPABASE_URL",
       "VITE_SUPABASE_ANON_KEY",
+      "VITE_TURNSTILE_SITE_KEY",
     ] as const) {
       expect(() =>
         resolvePublicWebConfiguration({
@@ -107,10 +109,20 @@ describe("public production configuration", () => {
       apiUrl: "https://postline-api.workers.dev",
       supabaseUrl: "https://project.supabase.co",
       supabaseAnonKey: "sb_publishable_abcdefghijklmnopqrstuvwxyz",
+      turnstileSiteKey: "1x00000000000000000000AA",
       identity: {
         operatorName: "Independent Postline",
         contactEmail: "legal@independent-postline.dev",
       },
     });
+  });
+
+  it("rejects a malformed production Turnstile site key", () => {
+    expect(() =>
+      resolvePublicWebConfiguration({
+        ...validEnvironment,
+        VITE_TURNSTILE_SITE_KEY: "not a site key",
+      }),
+    ).toThrow(/valid public site key/);
   });
 });

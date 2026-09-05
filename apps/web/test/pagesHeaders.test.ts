@@ -9,6 +9,7 @@ describe("Cloudflare Pages security headers", () => {
       apiUrl: "https://postline-api.workers.dev",
       supabaseUrl: "https://project.supabase.co",
       supabaseAnonKey: "public-key-not-rendered",
+      turnstileSiteKey: "1x00000000000000000000AA",
       identity: {
         operatorName: "Postline",
         contactEmail: "owner@postline.dev",
@@ -20,6 +21,11 @@ describe("Cloudflare Pages security headers", () => {
     );
     expect(headers).not.toMatch(/connect-src[^;\n]*\shttps:(?:\s|;)/);
     expect(headers).not.toContain("public-key-not-rendered");
+    expect(headers).toContain(
+      "script-src 'self' https://challenges.cloudflare.com",
+    );
+    expect(headers).toContain("frame-src https://challenges.cloudflare.com");
+    expect(headers).not.toContain("https://challenges.cloudflare.com/");
     expect(headers).toContain("frame-ancestors 'none'");
   });
 
@@ -29,6 +35,7 @@ describe("Cloudflare Pages security headers", () => {
       apiUrl: "https://services.example.dev",
       supabaseUrl: "https://services.example.dev",
       supabaseAnonKey: "public-key-not-rendered",
+      turnstileSiteKey: "1x00000000000000000000AA",
       identity: {
         operatorName: "Postline",
         contactEmail: "owner@postline.dev",

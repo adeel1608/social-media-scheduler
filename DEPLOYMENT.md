@@ -117,6 +117,7 @@ Set only these public build-time values in the web hosting project:
 - `VITE_API_URL=https://YOUR_WORKER_HOST`
 - `VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co`
 - `VITE_SUPABASE_ANON_KEY=...` (public anon key only)
+- `VITE_TURNSTILE_SITE_KEY=...` (public Turnstile Site Key only)
 - `VITE_DEMO_MODE=false`
 - `VITE_OPERATOR_NAME=YOUR_PUBLIC_OPERATOR_NAME`
 - `VITE_PUBLIC_CONTACT_EMAIL=YOUR_PUBLIC_CONTACT_EMAIL`
@@ -128,7 +129,10 @@ corepack pnpm --filter @scheduler/web build
 corepack pnpm --dir apps/worker exec wrangler pages deploy apps/web/dist --cwd ../.. --project-name YOUR_PAGES_PROJECT
 ```
 
-Configure SPA fallback, HTTPS, and the final custom domain. Update Supabase URL configuration and provider callback URIs if the canonical URL changes.
+Configure SPA fallback, HTTPS, and the final custom domain. Update Supabase URL
+configuration, the Turnstile widget hostname allowlist, and provider callback
+URIs if the canonical URL changes. The Turnstile secret key is configured only
+in Supabase CAPTCHA protection and is never passed to Vite or Pages.
 
 ## Verification
 
@@ -169,7 +173,8 @@ Do not enable `LIVE_TEST_CONFIRM` merely to make `/health` green. No social publ
 `.github/workflows/deploy.yml` is manual (`workflow_dispatch`), requires the
 operator to type `DEPLOY`, and uses the protected `production` environment. Set
 the non-secret `CLOUDFLARE_PAGES_PROJECT`, `CLOUDFLARE_WORKER_NAME`, `APP_URL`,
-`API_URL`, `SUPABASE_URL`, `OPERATOR_NAME`, and `PUBLIC_CONTACT_EMAIL`
+`API_URL`, `SUPABASE_URL`, `OPERATOR_NAME`, `PUBLIC_CONTACT_EMAIL`, and
+`VITE_TURNSTILE_SITE_KEY`
 repository/environment variables.
 Set only the Cloudflare deployment credentials and browser-safe Supabase anon
 key in the workflow's secret store. The preflight rejects missing, malformed,

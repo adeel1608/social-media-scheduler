@@ -2,6 +2,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 
 import { createCloudflarePagesHeaders } from "./src/lib/pagesHeaders.ts";
+import { injectPublicMetadata } from "./src/lib/publicMetadata.ts";
 import { resolvePublicWebConfiguration } from "./src/lib/publicIdentity.ts";
 
 export default defineConfig(({ mode }) => {
@@ -13,6 +14,12 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [
       react(),
+      {
+        name: "postline-public-metadata",
+        transformIndexHtml(html) {
+          return injectPublicMetadata(html, publicConfiguration.appUrl);
+        },
+      },
       {
         name: "postline-cloudflare-pages-headers",
         generateBundle() {

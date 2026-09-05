@@ -2319,6 +2319,27 @@ button:disabled {
 .login-card button {
   margin-top: 7px;
 }
+.turnstile-field {
+  display: grid;
+  gap: 7px;
+  margin-top: 5px;
+}
+.turnstile-label {
+  font-size: 10px;
+  font-weight: 750;
+}
+.turnstile-widget {
+  min-height: 65px;
+}
+.turnstile-status,
+.turnstile-error {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.turnstile-error {
+  color: #9a3c35;
+}
 .form-message {
   margin-top: 13px;
   padding: 10px;
@@ -2327,12 +2348,21 @@ button:disabled {
   color: #537555;
   font-size: 10px;
 }
+.form-message-error {
+  background: #f6e5e2;
+  color: #8a352f;
+}
 .login-note {
   margin-top: 20px;
   border-top: 1px solid var(--line);
   padding-top: 15px;
   color: #9a978f;
   font-size: 9px !important;
+}
+.login-note a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .legal-links {
   display: flex;

@@ -24,6 +24,7 @@ import { ownerAuth } from "./auth";
 import {
   configurationStatus,
   assertProductionConfigured,
+  ownerSetupStatus,
   type Env,
   type QueueJob,
 } from "./env";
@@ -162,7 +163,7 @@ app.on(["GET", "POST"], "/api/uploadthing", (c) =>
 );
 app.use("/api/*", ownerAuth);
 
-app.get("/api/setup", (c) => c.json(configurationStatus(c.env)));
+app.get("/api/setup", (c) => c.json(ownerSetupStatus(c.env)));
 
 app.get("/api/storage", async (c) => {
   const rows = await ownerDatabase(c.env, c.get("jwt")).rpc<
@@ -201,10 +202,13 @@ app.get("/api/accounts", async (c) => {
   return c.json({
     data: rows
       .map((row) =>
-        sanitizeConnectedAccount({
-          ...row,
-          disconnect_cleanup: cleanupByAccount.get(String(row.id)),
-        }),
+        sanitizeConnectedAccount(
+          {
+            ...row,
+            disconnect_cleanup: cleanupByAccount.get(String(row.id)),
+          },
+          c.env,
+        ),
       )
       .filter((row) => row !== null),
   });
@@ -764,7 +768,6 @@ const worker = {
   ) {
     assertProductionConfigured(env);
     const db = new SupabaseRest(env);
-    await syncConfiguredApprovalStates(env, db);
     await recoverStaleQueueTargets(env, db);
     context.waitUntil(
       retryFailedNotifications(env).catch(() => {
@@ -815,25 +818,6 @@ const worker = {
     }
   },
 };
-
-async function syncConfiguredApprovalStates(env: Env, db: SupabaseRest) {
-  const approvals = {
-    instagram: env.META_APP_REVIEW_APPROVED === "true",
-    tiktok: env.TIKTOK_CONTENT_POSTING_AUDITED === "true",
-    youtube: env.YOUTUBE_API_AUDIT_APPROVED === "true",
-  } as const;
-  await Promise.all(
-    Object.entries(approvals).map(([platform, approved]) =>
-      db.update(
-        `connected_accounts?platform=eq.${platform}&connection_status=eq.connected`,
-        {
-          approval_state: approved ? "approved" : "pending",
-          updated_at: new Date().toISOString(),
-        },
-      ),
-    ),
-  );
-}
 
 async function cleanupMedia(env: Env) {
   const db = new SupabaseRest(env);

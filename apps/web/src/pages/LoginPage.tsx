@@ -1,25 +1,56 @@
 import { ArrowRight, Check, LockKeyhole, WandSparkles } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useCallback, useRef, useState, type FormEvent } from "react";
 import { Navigate } from "react-router-dom";
 
+import {
+  TurnstileWidget,
+  type TurnstileWidgetHandle,
+} from "../components/TurnstileWidget";
 import { useAuth } from "../context/AuthContext";
+
+const repositoryUrl = "https://github.com/adeel1608/social-media-scheduler";
 
 export function LoginPage() {
   const { sendMagicLink, session, demoMode } = useAuth();
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
+  const [messageIsError, setMessageIsError] = useState(false);
   const [sending, setSending] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState("");
+  const turnstileReference = useRef<TurnstileWidgetHandle>(null);
+  const turnstileSiteKey =
+    import.meta.env.VITE_TURNSTILE_SITE_KEY?.trim() ?? "";
+  const updateCaptchaToken = useCallback((token: string) => {
+    setCaptchaToken(token);
+  }, []);
   if (session || demoMode) return <Navigate to="/analytics" replace />;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!captchaToken) {
+      setMessageIsError(true);
+      setMessage(
+        "Complete the security challenge before requesting a sign-in link.",
+      );
+      return;
+    }
     setSending(true);
-    const result = await sendMagicLink(email);
-    setMessage(
-      result.error ??
-        "Check your inbox. Your secure sign-in link is on its way.",
-    );
-    setSending(false);
+    setMessage("");
+    try {
+      const result = await sendMagicLink(email, captchaToken);
+      setMessageIsError(Boolean(result.error));
+      setMessage(
+        result.error ??
+          "Check your inbox. Your secure sign-in link is on its way.",
+      );
+    } catch {
+      setMessageIsError(true);
+      setMessage("The sign-in link could not be sent. Please try again later.");
+    } finally {
+      turnstileReference.current?.reset();
+      setCaptchaToken("");
+      setSending(false);
+    }
   }
 
   return (
@@ -81,10 +112,15 @@ export function LoginPage() {
               autoComplete="email"
               aria-describedby="login-help"
             />
+            <TurnstileWidget
+              ref={turnstileReference}
+              siteKey={turnstileSiteKey}
+              onTokenChange={updateCaptchaToken}
+            />
             <button
               className="primary-button full"
               type="submit"
-              disabled={sending}
+              disabled={sending || !captchaToken || !turnstileSiteKey}
               aria-busy={sending}
             >
               {sending ? "Sending link…" : "Send magic link"}
@@ -92,13 +128,18 @@ export function LoginPage() {
             </button>
           </form>
           {message && (
-            <div className="form-message" role="status">
+            <div
+              className={`form-message${messageIsError ? " form-message-error" : ""}`}
+              role={messageIsError ? "alert" : "status"}
+            >
               {message}
             </div>
           )}
           <p className="login-note">
-            Other authenticated email addresses are denied by the server and
-            database policies.
+            This hosted URL is one owner&apos;s private installation. For your
+            own installation, use the public{" "}
+            <a href={repositoryUrl}>Postline repository</a>. Other authenticated
+            email addresses are denied by server and database policies.
           </p>
           <div className="legal-links">
             <a href="/privacy">Privacy</a>
