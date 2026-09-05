@@ -12,10 +12,15 @@ import { cors } from "hono/cors";
 import { syncAnalyticsBatch } from "./analytics";
 import { sanitizeConnectedAccount } from "./accounts";
 import {
+  LocalDisconnectPendingError,
   revokeBeforeLocalDisconnect,
   revokeAccountsForInstallationDeletion,
   type RevocableAccount,
 } from "./account-revocation";
+import {
+  createDisconnectConfirmation,
+  verifyDisconnectConfirmation,
+} from "./disconnect-confirmation";
 import { adapterFor } from "./adapters";
 import type { Variables } from "./auth";
 import { ownerAuth } from "./auth";
@@ -25,9 +30,10 @@ import {
   type Env,
   type QueueJob,
 } from "./env";
-import { ownerDatabase, SupabaseRest } from "./database";
+import { DatabaseRequestError, ownerDatabase, SupabaseRest } from "./database";
 import oauthRoutes from "./oauth-routes";
 import { logWorkerError } from "./logging";
+import { retryFailedNotifications } from "./notifications";
 import { updateMediaRetentionForPost } from "./publisher";
 import { handleQueueMessage } from "./queue-handler";
 import { recoverStaleQueueTargets } from "./queue-recovery";
@@ -197,21 +203,73 @@ app.delete("/api/accounts/:id", async (c) => {
   );
   const account = rows[0];
   if (!account) return c.json({ error: "account_not_found" }, 404);
-  await revokeBeforeLocalDisconnect(c.env, account, () =>
-    db.update(
-      `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}`,
+  try {
+    await revokeBeforeLocalDisconnect(c.env, account, () =>
+      markAccountDisconnected(db, c.req.param("id"), c.get("user").id),
+    );
+  } catch (error) {
+    if (!(error instanceof LocalDisconnectPendingError)) throw error;
+    const confirmationToken = await createDisconnectConfirmation(
+      c.env,
+      c.req.param("id"),
+      c.get("user").id,
+    );
+    return c.json(
       {
-        connection_status: "disconnected",
-        encrypted_access_token: "revoked",
-        access_token_nonce: "revoked",
-        encrypted_refresh_token: null,
-        refresh_token_nonce: null,
-        updated_at: new Date().toISOString(),
+        ok: false,
+        providerRevoked: true,
+        localCleanupPending: true,
+        confirmationToken,
       },
-    ),
-  );
+      202,
+    );
+  }
   return c.json({ ok: true });
 });
+
+app.post("/api/accounts/:id/disconnect/confirm", async (c) => {
+  const input = (await c.req.json().catch(() => null)) as {
+    confirmationToken?: unknown;
+  } | null;
+  const accountId = c.req.param("id");
+  const ownerId = c.get("user").id;
+  if (
+    typeof input?.confirmationToken !== "string" ||
+    !(await verifyDisconnectConfirmation(
+      c.env,
+      input.confirmationToken,
+      accountId,
+      ownerId,
+    ))
+  ) {
+    return c.json({ error: "invalid_disconnect_confirmation" }, 400);
+  }
+  await markAccountDisconnected(
+    ownerDatabase(c.env, c.get("jwt")),
+    accountId,
+    ownerId,
+  );
+  return c.json({ ok: true, providerRevoked: true });
+});
+
+async function markAccountDisconnected(
+  db: SupabaseRest,
+  accountId: string,
+  ownerId: string,
+) {
+  const rows = await db.update<Array<{ id: string }>>(
+    `connected_accounts?id=eq.${encodeURIComponent(accountId)}&owner_id=eq.${ownerId}`,
+    {
+      connection_status: "disconnected",
+      encrypted_access_token: "revoked",
+      access_token_nonce: "revoked",
+      encrypted_refresh_token: null,
+      refresh_token_nonce: null,
+      updated_at: new Date().toISOString(),
+    },
+  );
+  if (!rows.length) throw new DatabaseRequestError(409);
+}
 
 app.get("/api/queue", async (c) => {
   const parsed = paginationSchema.safeParse(c.req.query());
@@ -689,6 +747,11 @@ const worker = {
     const db = new SupabaseRest(env);
     await syncConfiguredApprovalStates(env, db);
     await recoverStaleQueueTargets(env, db);
+    context.waitUntil(
+      retryFailedNotifications(env).catch(() => {
+        logWorkerError("notification_reconciliation_failed");
+      }),
+    );
     const workerId = crypto.randomUUID();
     const claimed = await db.rpc<Array<{ id: string }>>("claim_due_targets", {
       p_worker_id: workerId,

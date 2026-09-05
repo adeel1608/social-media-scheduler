@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  LocalDisconnectPendingError,
   revokeAccountsForInstallationDeletion,
   revokeBeforeLocalDisconnect,
 } from "../src/account-revocation";
@@ -81,5 +82,29 @@ describe("installation deletion provider revocation", () => {
       ),
     ).rejects.toThrow("provider unavailable");
     expect(markLocallyDisconnected).toHaveBeenCalledTimes(1);
+  });
+
+  it("distinguishes local cleanup failure after confirmed provider revocation", async () => {
+    const dependencies = {
+      decrypt: vi.fn(async () => "access-token"),
+      disconnect: vi.fn(async () => undefined),
+    };
+
+    await expect(
+      revokeBeforeLocalDisconnect(
+        {} as Env,
+        {
+          platform: "youtube",
+          encrypted_access_token: "encrypted",
+          access_token_nonce: "nonce",
+          encryption_key_version: "v1",
+        },
+        async () => {
+          throw new Error("database unavailable");
+        },
+        dependencies,
+      ),
+    ).rejects.toBeInstanceOf(LocalDisconnectPendingError);
+    expect(dependencies.disconnect).toHaveBeenCalledTimes(1);
   });
 });

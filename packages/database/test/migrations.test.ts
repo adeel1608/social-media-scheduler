@@ -42,6 +42,7 @@ describe("Supabase migrations", () => {
     expect(sql).toContain(
       "grant execute on function public.claim_stale_targets",
     );
+    expect(sql).toContain("limit greatest(0, least(p_limit, 500))");
   });
 
   it("enforces independent target uniqueness and email deduplication", () => {
@@ -53,6 +54,10 @@ describe("Supabase migrations", () => {
     expect(sql).toContain("selected_media_ids uuid[]");
     expect(sql).toContain("target media must be selected from post media");
     expect(sql).toContain("publish_request_sent_at = null");
+    expect(sql).toContain("function app_private.enqueue_target_failure_email");
+    expect(sql).toContain("post_targets_enqueue_failure_email");
+    expect(sql).toContain("email_events_delivery_retry_idx");
+    expect(sql).toContain("next_attempt_at");
     expect(sql).toContain("deletion_blocked_reason");
     expect(sql).toContain("delete_installation_data");
   });

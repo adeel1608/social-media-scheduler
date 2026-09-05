@@ -172,6 +172,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       "https://open.tiktokapis.com/v2/oauth/token/",
       {
+        operation: "idempotent",
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
@@ -187,6 +188,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       "https://open.tiktokapis.com/v2/oauth/token/",
       {
+        operation: "idempotent",
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -206,6 +208,7 @@ export class TikTokAdapter implements PlatformAdapter {
         this.fetcher,
         "https://open.tiktokapis.com/v2/oauth/revoke/",
         {
+          operation: "idempotent",
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({
@@ -234,7 +237,10 @@ export class TikTokAdapter implements PlatformAdapter {
     const response = await jsonRequest<unknown>(
       this.fetcher,
       "https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url,username",
-      { headers: { Authorization: `Bearer ${accessToken}` } },
+      {
+        operation: "read",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
     );
     const data = objectValue(response);
     const nestedData = objectValue(data?.data);
@@ -390,6 +396,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       "https://open.tiktokapis.com/v2/post/publish/creator_info/query/",
       {
+        operation: "read",
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -399,7 +406,7 @@ export class TikTokAdapter implements PlatformAdapter {
     );
   }
 
-  async publish(input: PublishInput) {
+  async preflightPublish(input: PublishInput) {
     const metadata = input.metadata as TikTokMetadata;
     if (
       metadata.privacyLevel === "PUBLIC_TO_EVERYONE" &&
@@ -471,6 +478,25 @@ export class TikTokAdapter implements PlatformAdapter {
         );
       }
     }
+    return null;
+  }
+
+  async publish(input: PublishInput) {
+    const metadata = input.metadata as TikTokMetadata;
+    if (
+      metadata.privacyLevel === "PUBLIC_TO_EVERYONE" &&
+      !this.config.contentPostingAudited
+    ) {
+      return {
+        outcome: "failed" as const,
+        sanitizedResponse: { blocked: "tiktok_audit_pending" },
+        error: {
+          code: "audit_required",
+          message: "TikTok public posting requires an approved audit.",
+          retryable: false,
+        },
+      };
+    }
     const headers = {
       Authorization: `Bearer ${input.accessToken}`,
       "Content-Type": "application/json; charset=UTF-8",
@@ -483,6 +509,7 @@ export class TikTokAdapter implements PlatformAdapter {
         this.fetcher,
         "https://open.tiktokapis.com/v2/post/publish/content/init/",
         {
+          operation: "publish",
           method: "POST",
           headers,
           body: JSON.stringify({
@@ -506,6 +533,14 @@ export class TikTokAdapter implements PlatformAdapter {
           }),
         },
       );
+      if (!result.data?.publish_id) {
+        throw {
+          code: "invalid_publish_response",
+          message: "TikTok accepted the request without a publish identifier.",
+          retryable: false,
+          ambiguous: true,
+        };
+      }
       return {
         outcome: "processing" as const,
         statusHandle: result.data.publish_id,
@@ -521,6 +556,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       "https://open.tiktokapis.com/v2/post/publish/video/init/",
       {
+        operation: "publish",
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -543,7 +579,26 @@ export class TikTokAdapter implements PlatformAdapter {
         }),
       },
     );
-    const uploadUrl = trustedUploadSessionUrl("tiktok", result.data.upload_url);
+    if (!result.data?.publish_id) {
+      throw {
+        code: "invalid_publish_response",
+        message: "TikTok accepted the request without a publish identifier.",
+        retryable: false,
+        ambiguous: true,
+      };
+    }
+    let uploadUrl: string;
+    try {
+      uploadUrl = trustedUploadSessionUrl("tiktok", result.data.upload_url);
+    } catch {
+      throw {
+        code: "invalid_upload_session",
+        message: "TikTok returned an invalid upload session.",
+        retryable: false,
+        ambiguous: true,
+        statusHandle: result.data.publish_id,
+      };
+    }
     return {
       outcome: "processing" as const,
       statusHandle: result.data.publish_id,
@@ -572,6 +627,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
       {
+        operation: "read",
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -615,6 +671,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       `https://open.tiktokapis.com/v2/video/${endpoint}/?fields=${fields}`,
       {
+        operation: "read",
         method: "POST",
         headers: {
           Authorization: `Bearer ${request.accessToken}`,

@@ -104,15 +104,15 @@ Source media is eligible for deletion seven days after every target succeeds. An
 
 ## Honest verification status
 
-| Surface                                  | Source-code/mock verification                     | Adeel owner deployment (4 September 2026)                  |
-| ---------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------- |
-| Instagram, TikTok, and YouTube adapters  | Implemented and mock-tested                       | Provider connections exist; no live publication verified   |
-| Supabase database schema                 | Ordered migrations and static validation          | Migration 003 applied                                      |
-| Supabase authentication and RLS behavior | Implemented and covered by migration/static tests | Not live-tested end to end                                 |
-| Cloudflare Worker, Cron, and Queues      | Worker dry-run and local logic verified           | Configured Worker health is 200; cron and queues are bound |
-| React/Vite frontend                      | Production build and browser E2E verified         | Pages deployment serves public and legal routes            |
-| UploadThing media operations             | SDK integration mock-tested                       | No live storage workflow verified                          |
-| Resend failure email                     | Deduplication and delivery logic mock-tested      | No live sender delivery verified                           |
+| Surface                                  | Source-code/mock verification                                          | Adeel owner deployment (4 September 2026)                  |
+| ---------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Instagram, TikTok, and YouTube adapters  | Implemented and mock-tested                                            | Provider connections exist; no live publication verified   |
+| Supabase database schema                 | Ordered migrations, static checks, and disposable PostgreSQL execution | Migration 003 applied                                      |
+| Supabase authentication and RLS behavior | Implemented and covered by migration/static tests                      | Not live-tested end to end                                 |
+| Cloudflare Worker, Cron, and Queues      | Worker dry-run and local logic verified                                | Configured Worker health is 200; cron and queues are bound |
+| React/Vite frontend                      | Production build and browser E2E verified                              | Pages deployment serves public and legal routes            |
+| UploadThing media operations             | SDK integration mock-tested                                            | No live storage workflow verified                          |
+| Resend failure email                     | Deduplication and delivery logic mock-tested                           | No live sender delivery verified                           |
 
 The deployment column records one maintainer installation, not the state of a
 new clone. Source/mock results do not represent live provider verification.
@@ -128,6 +128,9 @@ corepack pnpm typecheck
 corepack pnpm test
 corepack pnpm build:verify
 corepack pnpm db:validate
+corepack pnpm exec supabase start
+corepack pnpm db:test
+corepack pnpm exec supabase stop --no-backup
 corepack pnpm test:e2e
 corepack pnpm audit --audit-level high
 corepack pnpm secrets:scan

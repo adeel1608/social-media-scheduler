@@ -2,6 +2,12 @@ import { redactSecrets, type Platform } from "@scheduler/shared";
 
 import type { Fetch, PlatformError } from "./types";
 
+export type ProviderOperation = "read" | "idempotent" | "publish";
+
+export interface ProviderRequestInit extends RequestInit {
+  operation: ProviderOperation;
+}
+
 export function trustedUploadSessionUrl(
   platform: Platform,
   value: string,
@@ -38,30 +44,15 @@ export function trustedUploadSessionUrl(
 export async function jsonRequest<T>(
   fetcher: Fetch,
   url: string,
-  init: RequestInit = {},
+  init: ProviderRequestInit,
   timeoutMs = 15_000,
 ): Promise<T> {
-  const controller = new AbortController();
-  const upstreamSignal = init.signal;
-  const forwardAbort = () => controller.abort(upstreamSignal?.reason);
-  if (upstreamSignal?.aborted) forwardAbort();
-  else upstreamSignal?.addEventListener("abort", forwardAbort, { once: true });
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  let response: Response;
+  const response = await providerRequest(fetcher, url, init, timeoutMs);
   let text: string;
   try {
-    response = await fetcher(url, { ...init, signal: controller.signal });
     text = await response.text();
   } catch {
-    throw {
-      name: "NetworkError",
-      code: "network_error",
-      message: "Network request failed",
-      ambiguous: (init.method ?? "GET").toUpperCase() !== "GET",
-    };
-  } finally {
-    clearTimeout(timeout);
-    upstreamSignal?.removeEventListener("abort", forwardAbort);
+    throw providerNetworkError(init.operation);
   }
   let body: unknown = {};
   if (text) {
@@ -71,15 +62,62 @@ export async function jsonRequest<T>(
       body = { message: text.slice(0, 500) };
     }
   }
-  if (!response.ok) {
-    throw {
-      name: "PlatformHttpError",
-      status: response.status,
-      body: redactSecrets(body),
-      message: `Platform request failed with HTTP ${response.status}`,
-    };
-  }
+  if (!response.ok)
+    throw providerHttpError(response.status, body, init.operation);
   return body as T;
+}
+
+export async function providerRequest(
+  fetcher: Fetch,
+  url: string,
+  init: ProviderRequestInit,
+  timeoutMs = 15_000,
+): Promise<Response> {
+  const controller = new AbortController();
+  const upstreamSignal = init.signal;
+  const forwardAbort = () => controller.abort(upstreamSignal?.reason);
+  if (upstreamSignal?.aborted) forwardAbort();
+  else upstreamSignal?.addEventListener("abort", forwardAbort, { once: true });
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const { operation: _operation, ...requestInit } = init;
+  try {
+    return await fetcher(url, {
+      ...requestInit,
+      signal: controller.signal,
+    });
+  } catch {
+    throw providerNetworkError(init.operation);
+  } finally {
+    clearTimeout(timeout);
+    upstreamSignal?.removeEventListener("abort", forwardAbort);
+  }
+}
+
+export function providerHttpError(
+  status: number,
+  body: unknown,
+  operation: ProviderOperation,
+) {
+  const ambiguous = operation === "publish" && status >= 500;
+  return {
+    name: "PlatformHttpError",
+    status,
+    body: redactSecrets(body),
+    message: `Platform request failed with HTTP ${status}`,
+    retryable: !ambiguous && (status === 429 || status >= 500),
+    ambiguous,
+  };
+}
+
+function providerNetworkError(operation: ProviderOperation) {
+  const ambiguous = operation === "publish";
+  return {
+    name: "NetworkError",
+    code: "network_error",
+    message: "Network request failed",
+    retryable: !ambiguous,
+    ambiguous,
+  };
 }
 
 export function genericNormalizeError(error: unknown): PlatformError {
@@ -101,15 +139,18 @@ export function genericNormalizeError(error: unknown): PlatformError {
         candidate.message ??
         "Platform request failed",
     );
-    const ambiguous = Boolean(
-      candidate.ambiguous ?? candidate.name === "NetworkError",
-    );
+    const ambiguous = Boolean(candidate.ambiguous);
+    const explicitlyRetryable =
+      typeof candidate.retryable === "boolean"
+        ? candidate.retryable
+        : undefined;
     return {
       code,
       message,
       retryable:
-        !ambiguous &&
-        (status === 429 || (status !== undefined && status >= 500)),
+        explicitlyRetryable ??
+        (!ambiguous &&
+          (status === 429 || (status !== undefined && status >= 500))),
       ambiguous,
       ...(status !== undefined ? { httpStatus: status } : {}),
     };

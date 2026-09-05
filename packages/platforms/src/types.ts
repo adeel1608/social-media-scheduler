@@ -93,6 +93,7 @@ export interface PlatformAdapter {
     metadata: PlatformMetadata,
     media: MediaDescriptor[],
   ): ValidationResult;
+  preflightPublish?(input: PublishInput): Promise<PublishResult | null>;
   publish(input: PublishInput): Promise<PublishResult>;
   getPublishStatus(
     accessToken: string,

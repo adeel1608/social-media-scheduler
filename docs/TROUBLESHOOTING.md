@@ -76,7 +76,13 @@ again.
 
 ## Database migration failure
 
-Run `corepack pnpm db:validate`, inspect `corepack pnpm supabase db push --dry-run`, and confirm migrations are applied in filename order. Use a new forward migration to repair deployed schema; do not edit history after deployment.
+Run `corepack pnpm db:validate`, start a disposable local stack with
+`corepack pnpm exec supabase start`, and run `corepack pnpm db:test`. Inspect
+`corepack pnpm supabase db push --dry-run` and confirm migrations are applied
+in filename order. The production deployment must stop before Worker deployment
+if its zero-row `claim_stale_targets` service-role preflight fails. Use a new
+forward migration to repair deployed schema; do not edit history after
+deployment.
 
 ## No analytics value
 

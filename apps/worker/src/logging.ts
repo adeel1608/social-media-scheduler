@@ -10,6 +10,7 @@ export type WorkerErrorCode =
   | "queue_lease_release_failed"
   | "stale_queue_dispatch_failed"
   | "provider_revocation_incomplete"
+  | "notification_reconciliation_failed"
   | "media_retention_update_failed";
 
 interface WorkerErrorContext {

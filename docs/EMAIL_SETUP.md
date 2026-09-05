@@ -75,4 +75,11 @@ error, definite/ambiguous status, dashboard link, and manual-retry guidance.
 They never contain tokens, raw provider responses, or signed URLs. There are no
 success emails.
 
+The terminal target transition creates the deduplicated notification event in
+the same database transaction. A failed or uncertain Resend request remains
+`pending`/`failed`; the minute cron reconciles it with authoritative target
+state and retries with bounded exponential backoff using the same Resend
+idempotency key. Operators should alert on
+`notification_reconciliation_failed` rather than deleting event rows.
+
 Official sources: [Supabase custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp), [Supabase Gmail SMTP](https://supabase.com/docs/guides/troubleshooting/using-google-smtp-with-supabase-custom-smtp-ZZzU4Y), [Google App Passwords](https://support.google.com/accounts/answer/185833), [Resend test-domain restriction](https://resend.com/docs/knowledge-base/403-error-resend-dev-domain), [domain verification](https://resend.com/docs/dashboard/domains/introduction), [sending an email](https://resend.com/docs/api-reference/emails/send-email), and [sender addresses](https://resend.com/docs/knowledge-base/how-do-I-create-an-email-address-or-sender-in-resend).

@@ -8,6 +8,8 @@ import {
 import {
   genericNormalizeError,
   jsonRequest,
+  providerHttpError,
+  providerRequest,
   trustedUploadSessionUrl,
 } from "./http";
 import type {
@@ -72,6 +74,7 @@ export class YouTubeAdapter implements PlatformAdapter {
       this.fetcher,
       "https://oauth2.googleapis.com/token",
       {
+        operation: "idempotent",
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -102,6 +105,7 @@ export class YouTubeAdapter implements PlatformAdapter {
       this.fetcher,
       "https://oauth2.googleapis.com/token",
       {
+        operation: "idempotent",
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -126,6 +130,7 @@ export class YouTubeAdapter implements PlatformAdapter {
       this.fetcher,
       `https://oauth2.googleapis.com/revoke?${new URLSearchParams({ token: accessToken })}`,
       {
+        operation: "idempotent",
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
       },
@@ -145,7 +150,10 @@ export class YouTubeAdapter implements PlatformAdapter {
     }>(
       this.fetcher,
       "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
-      { headers: { Authorization: `Bearer ${accessToken}` } },
+      {
+        operation: "read",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
     );
     const channel = data.items[0];
     if (!channel)
@@ -263,9 +271,11 @@ export class YouTubeAdapter implements PlatformAdapter {
       item.mimeType.startsWith("video/"),
     );
     if (!source) throw new Error("YouTube video media is missing");
-    const response = await this.fetcher(
+    const response = await providerRequest(
+      this.fetcher,
       "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
       {
+        operation: "publish",
         method: "POST",
         headers: {
           Authorization: `Bearer ${input.accessToken}`,
@@ -289,12 +299,21 @@ export class YouTubeAdapter implements PlatformAdapter {
       },
     );
     if (!response.ok) {
-      const body = await response.text();
-      throw { status: response.status, body: { message: body.slice(0, 500) } };
+      const body = await response.text().catch(() => "");
+      throw providerHttpError(
+        response.status,
+        { message: body.slice(0, 500) },
+        "publish",
+      );
     }
     const sessionUrl = response.headers.get("Location");
     if (!sessionUrl)
-      throw new Error("YouTube did not return a resumable upload location");
+      throw {
+        code: "missing_upload_location",
+        message: "YouTube did not return a resumable upload location",
+        retryable: false,
+        ambiguous: true,
+      };
     const trustedSessionUrl = trustedUploadSessionUrl("youtube", sessionUrl);
     return {
       outcome: "processing" as const,
@@ -323,7 +342,10 @@ export class YouTubeAdapter implements PlatformAdapter {
     }>(
       this.fetcher,
       `https://www.googleapis.com/youtube/v3/videos?part=status&id=${encodeURIComponent(statusHandle)}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
+      {
+        operation: "read",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
     );
     const video = result.items[0];
     if (video?.status.uploadStatus === "processed") {
@@ -372,7 +394,10 @@ export class YouTubeAdapter implements PlatformAdapter {
     }>(
       this.fetcher,
       `https://youtubeanalytics.googleapis.com/v2/reports?${params.toString()}`,
-      { headers: { Authorization: `Bearer ${request.accessToken}` } },
+      {
+        operation: "read",
+        headers: { Authorization: `Bearer ${request.accessToken}` },
+      },
     );
     const row = result.rows?.[0] ?? [];
     const raw = Object.fromEntries(
@@ -387,9 +412,11 @@ export class YouTubeAdapter implements PlatformAdapter {
     body: BodyInit,
     mimeType: string,
   ): Promise<void> {
-    const response = await this.fetcher(
+    const response = await providerRequest(
+      this.fetcher,
       `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${encodeURIComponent(videoId)}&uploadType=media`,
       {
+        operation: "idempotent",
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -399,10 +426,11 @@ export class YouTubeAdapter implements PlatformAdapter {
       },
     );
     if (!response.ok) {
-      throw {
-        status: response.status,
-        body: { message: (await response.text()).slice(0, 500) },
-      };
+      throw providerHttpError(
+        response.status,
+        { message: (await response.text().catch(() => "")).slice(0, 500) },
+        "idempotent",
+      );
     }
   }
 

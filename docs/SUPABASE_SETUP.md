@@ -1,7 +1,7 @@
 # Supabase setup
 
 Verified against current Supabase passwordless-email, SMTP, abuse-prevention,
-and RLS documentation on 2026-09-04.
+local-development, database-testing, and RLS documentation on 2026-09-05.
 
 1. In the Supabase dashboard, create a project for this installation and wait
    for database readiness.
@@ -10,6 +10,21 @@ and RLS documentation on 2026-09-04.
    secret.
 3. Install/login/link the CLI and run `supabase db push --dry-run`, inspect the
    project ref and SQL, then `supabase db push`.
+   Before pushing, execute every migration and the pgTAP authorization checks
+   against a disposable local stack:
+
+   ```bash
+   corepack pnpm exec supabase start
+   corepack pnpm db:test
+   corepack pnpm exec supabase stop --no-backup
+   ```
+
+   CI runs the same disposable-stack verification. The production deployment
+   workflow also makes a zero-row, non-mutating service-role call to
+   `claim_stale_targets` and a zero-row notification-schema query; it stops
+   before Worker deployment if either required migration is missing or
+   inaccessible.
+
 4. Authentication > URL Configuration: set Site URL to the exact HTTPS web
    origin and add `https://YOUR_WEB_HOST/dashboard` plus the local callback used
    for development.

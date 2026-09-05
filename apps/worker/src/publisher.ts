@@ -8,7 +8,12 @@ import {
   type PlatformMetadata,
   type PublishResult,
 } from "@scheduler/shared";
-import { trustedUploadSessionUrl } from "@scheduler/platforms";
+import {
+  providerHttpError,
+  providerRequest,
+  trustedUploadSessionUrl,
+  type PlatformAdapter,
+} from "@scheduler/platforms";
 
 import { adapterFor } from "./adapters";
 import { DatabaseRequestError, SupabaseRest } from "./database";
@@ -30,7 +35,7 @@ import {
   signedDeliveryUrl,
 } from "./storage";
 
-interface TargetRecord {
+export interface TargetRecord {
   id: string;
   owner_id: string;
   post_id: string;
@@ -95,6 +100,42 @@ async function enqueueQueueJob(
   } catch {
     throw new QueueInfrastructureError(job);
   }
+}
+
+interface ClaimedQueueJobDependencies {
+  adapterFor: (platform: Platform, env: Env) => PlatformAdapter;
+  loadAccessToken: typeof loadAccessToken;
+  nextAttempt: typeof nextAttempt;
+  recordFinal: typeof recordFinal;
+  signedDeliveryUrl: typeof signedDeliveryUrl;
+  enqueueQueueJob: typeof enqueueQueueJob;
+  encryptSecret: typeof encryptSecret;
+  now: () => string;
+}
+
+function claimedQueueJobDependencies(
+  overrides: Partial<ClaimedQueueJobDependencies> = {},
+): ClaimedQueueJobDependencies {
+  return {
+    adapterFor,
+    loadAccessToken,
+    nextAttempt,
+    recordFinal,
+    signedDeliveryUrl,
+    enqueueQueueJob,
+    encryptSecret,
+    now: () => new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+interface QueueJobDependencies {
+  createDatabase: (env: Env) => SupabaseRest;
+  loadTarget: typeof loadTarget;
+  processClaimedQueueJob: typeof processClaimedQueueJob;
+  enqueueQueueJob: typeof enqueueQueueJob;
+  leaseOwner: () => string;
+  now: () => Date;
 }
 
 export function acceptedUploadByte(
@@ -235,6 +276,7 @@ async function recordFinal(
   target: TargetRecord,
   attempt: { id: string; number: number },
   result: PublishResult,
+  requestSentAt?: string,
 ) {
   const remoteUrl =
     result.remoteUrl ??
@@ -265,6 +307,7 @@ async function recordFinal(
     updated_at: new Date().toISOString(),
   });
   await db.update(`publish_attempts?id=eq.${attempt.id}`, {
+    ...(requestSentAt ? { request_sent_at: requestSentAt } : {}),
     finished_at: new Date().toISOString(),
     outcome: result.outcome,
     ...(result.error
@@ -332,10 +375,20 @@ export async function updateMediaRetentionForPost(
 export async function processQueueJob(
   env: Env,
   job: QueueJob,
+  overrides: Partial<QueueJobDependencies> = {},
 ): Promise<QueueProcessResult> {
-  const db = new SupabaseRest(env);
-  const leaseOwner = `queue:${crypto.randomUUID()}`;
-  const now = new Date();
+  const dependencies: QueueJobDependencies = {
+    createDatabase: (environment) => new SupabaseRest(environment),
+    loadTarget,
+    processClaimedQueueJob,
+    enqueueQueueJob,
+    leaseOwner: () => `queue:${crypto.randomUUID()}`,
+    now: () => new Date(),
+    ...overrides,
+  };
+  const db = dependencies.createDatabase(env);
+  const leaseOwner = dependencies.leaseOwner();
+  const now = dependencies.now();
   let target: TargetRecord | null = null;
   try {
     const claimed = await db.update<Array<{ id: string }>>(
@@ -348,12 +401,12 @@ export async function processQueueJob(
       },
     );
     if (!claimed.length) {
-      target = await loadTarget(db, job.targetId);
+      target = await dependencies.loadTarget(db, job.targetId);
       if (
         target &&
         ["queued", "publishing", "processing"].includes(target.status)
       ) {
-        await enqueueQueueJob(
+        await dependencies.enqueueQueueJob(
           env,
           { ...job, requestedAt: new Date().toISOString() },
           30,
@@ -363,11 +416,11 @@ export async function processQueueJob(
         ? queueResult(target, "duplicate_delivery")
         : { classification: "duplicate_delivery", state: "not_found" };
     }
-    target = await loadTarget(db, job.targetId);
+    target = await dependencies.loadTarget(db, job.targetId);
     if (!target) {
       return { classification: "duplicate_delivery", state: "not_found" };
     }
-    return await processClaimedQueueJob(env, db, job, target);
+    return await dependencies.processClaimedQueueJob(env, db, job, target);
   } catch (error) {
     if (error instanceof QueueInfrastructureError) {
       throw new QueueInfrastructureError(
@@ -396,12 +449,14 @@ export async function processQueueJob(
   }
 }
 
-async function processClaimedQueueJob(
+export async function processClaimedQueueJob(
   env: Env,
   db: SupabaseRest,
   job: QueueJob,
   target: TargetRecord,
+  overrides: Partial<ClaimedQueueJobDependencies> = {},
 ): Promise<QueueProcessResult> {
+  const dependencies = claimedQueueJobDependencies(overrides);
   if (
     ["published", "failed", "needs_review", "cancelled"].includes(target.status)
   )
@@ -421,10 +476,10 @@ async function processClaimedQueueJob(
       "blocked_authorization",
     );
   }
-  const adapter = adapterFor(target.platform, env);
+  const adapter = dependencies.adapterFor(target.platform, env);
   let accessToken: string;
   try {
-    accessToken = await loadAccessToken(env, target);
+    accessToken = await dependencies.loadAccessToken(env, target);
   } catch (error) {
     if (
       isInfrastructureError(error) ||
@@ -456,14 +511,14 @@ async function processClaimedQueueJob(
   // not let that stale mode re-initiate a provider request or skip an upload.
   const continuationMode = recoveryModeForTarget(target);
   if (continuationMode === "upload")
-    return continueUploadSafely(env, db, target, accessToken);
+    return continueUploadSafely(env, db, target, accessToken, dependencies);
   if (continuationMode === "poll")
-    return pollStatus(env, db, target, accessToken);
+    return pollStatus(env, db, target, accessToken, dependencies);
 
   if (target.publish_request_sent_at) {
     // A publish request might already have reached the platform. Never send another one automatically.
     if (target.platform_upload_state?.statusHandle) {
-      await enqueueQueueJob(
+      await dependencies.enqueueQueueJob(
         env,
         { ...job, mode: "poll", requestedAt: new Date().toISOString() },
         60,
@@ -477,19 +532,26 @@ async function processClaimedQueueJob(
               id: state.attemptId,
               number: Number(state.attemptNumber ?? 1),
             }
-          : await nextAttempt(db, target);
-      await recordFinal(env, db, target, attempt, {
-        outcome: "ambiguous",
-        sanitizedResponse: {
-          reason: "prior_publish_request_detected_without_status_handle",
+          : await dependencies.nextAttempt(db, target);
+      await dependencies.recordFinal(
+        env,
+        db,
+        target,
+        attempt,
+        {
+          outcome: "ambiguous",
+          sanitizedResponse: {
+            reason: "prior_publish_request_detected_without_status_handle",
+          },
+          error: {
+            code: "ambiguous_prior_request",
+            message:
+              "A prior publish request may have been accepted. Review the platform before retrying.",
+            retryable: false,
+          },
         },
-        error: {
-          code: "ambiguous_prior_request",
-          message:
-            "A prior publish request may have been accepted. Review the platform before retrying.",
-          retryable: false,
-        },
-      });
+        target.publish_request_sent_at,
+      );
       return queueResult(
         target,
         "ambiguous_provider_acceptance",
@@ -498,7 +560,6 @@ async function processClaimedQueueJob(
     }
   }
 
-  const attempt = await nextAttempt(db, target);
   const selected = new Set(target.selected_media_ids);
   const mediaRows = [...target.posts.post_media]
     .filter(({ media_assets: item }) => selected.has(item.id))
@@ -519,7 +580,8 @@ async function processClaimedQueueJob(
   }));
   const validation = adapter.validatePost(target.metadata, media);
   if (!validation.valid) {
-    await recordFinal(env, db, target, attempt, {
+    const attempt = await dependencies.nextAttempt(db, target);
+    await dependencies.recordFinal(env, db, target, attempt, {
       outcome: "failed",
       sanitizedResponse: { validation: validation.errors },
       error: {
@@ -532,13 +594,58 @@ async function processClaimedQueueJob(
   }
   const deliveryUrls = await Promise.all(
     media.map((item) =>
-      signedDeliveryUrl(env, {
+      dependencies.signedDeliveryUrl(env, {
         mediaId: item.id,
         ownerId: target.owner_id,
       }),
     ),
   );
-  const requestSentAt = new Date().toISOString();
+  const publishInput = {
+    accountId: target.connected_accounts.remote_account_id,
+    accessToken,
+    idempotencyKey: target.idempotency_key,
+    metadata: target.metadata,
+    media,
+    deliveryUrls,
+  };
+  if (adapter.preflightPublish) {
+    let preflightResult: PublishResult | null;
+    try {
+      preflightResult = await adapter.preflightPublish(publishInput);
+    } catch (error) {
+      const normalized = adapter.normalizeError(error);
+      if (normalized.retryable && !normalized.ambiguous) {
+        throw new QueueInfrastructureError(job, target.platform, target.status);
+      }
+      preflightResult = {
+        outcome: "failed",
+        sanitizedResponse: {
+          code: normalized.code,
+          httpStatus: normalized.httpStatus,
+          phase: "preflight",
+        },
+        error: {
+          code: normalized.code,
+          message: normalized.message,
+          retryable: false,
+        },
+      };
+    }
+    if (preflightResult) {
+      const attempt = await dependencies.nextAttempt(db, target);
+      await dependencies.recordFinal(env, db, target, attempt, preflightResult);
+      return queueResult(
+        target,
+        classifyPublishResult(preflightResult),
+        preflightResult.outcome,
+      );
+    }
+  }
+
+  const attempt = await dependencies.nextAttempt(db, target);
+  // This durable marker is the last awaited operation before the first
+  // non-idempotent provider request. A redelivery must never cross it twice.
+  const requestSentAt = dependencies.now();
   await db.update(`post_targets?id=eq.${target.id}`, {
     status: "publishing",
     publish_request_sent_at: requestSentAt,
@@ -551,35 +658,43 @@ async function processClaimedQueueJob(
   });
   let result: PublishResult;
   try {
-    result = await adapter.publish({
-      accountId: target.connected_accounts.remote_account_id,
-      accessToken,
-      idempotencyKey: target.idempotency_key,
-      metadata: target.metadata,
-      media,
-      deliveryUrls,
-    });
+    result = await adapter.publish(publishInput);
   } catch (error) {
     const normalized = adapter.normalizeError(error);
-    result = {
-      outcome: normalized.ambiguous ? "ambiguous" : "failed",
-      sanitizedResponse: {
-        code: normalized.code,
-        httpStatus: normalized.httpStatus,
-      },
-      error: {
-        code: normalized.code,
-        message: normalized.message,
-        retryable: false,
-      },
-    };
+    const statusHandle =
+      error &&
+      typeof error === "object" &&
+      typeof (error as { statusHandle?: unknown }).statusHandle === "string" &&
+      (error as { statusHandle: string }).statusHandle.length > 0 &&
+      (error as { statusHandle: string }).statusHandle.length <= 512
+        ? (error as { statusHandle: string }).statusHandle
+        : undefined;
+    result =
+      normalized.ambiguous && statusHandle
+        ? {
+            outcome: "processing",
+            statusHandle,
+            sanitizedResponse: {
+              code: normalized.code,
+              httpStatus: normalized.httpStatus,
+              recoveredStatusHandle: true,
+            },
+          }
+        : {
+            outcome: normalized.ambiguous ? "ambiguous" : "failed",
+            sanitizedResponse: {
+              code: normalized.code,
+              httpStatus: normalized.httpStatus,
+            },
+            error: {
+              code: normalized.code,
+              message: normalized.message,
+              retryable: false,
+            },
+          };
   }
-  await db.update(`publish_attempts?id=eq.${attempt.id}`, {
-    request_sent_at: requestSentAt,
-    sanitized_response: redactSecrets(result.sanitizedResponse),
-  });
   if (result.uploadSession) {
-    const encrypted = await encryptSecret(
+    const encrypted = await dependencies.encryptSecret(
       result.uploadSession.url,
       env.TOKEN_ENCRYPTION_KEY,
       env.TOKEN_ENCRYPTION_KEY_VERSION,
@@ -598,7 +713,11 @@ async function processClaimedQueueJob(
         attemptNumber: attempt.number,
       },
     });
-    await enqueueQueueJob(
+    await db.update(`publish_attempts?id=eq.${attempt.id}`, {
+      request_sent_at: requestSentAt,
+      sanitized_response: redactSecrets(result.sanitizedResponse),
+    });
+    await dependencies.enqueueQueueJob(
       env,
       {
         targetId: target.id,
@@ -610,6 +729,33 @@ async function processClaimedQueueJob(
     return queueResult(target, "safe_continuation", "processing");
   }
   if (result.outcome === "processing") {
+    if (!result.statusHandle) {
+      await dependencies.recordFinal(
+        env,
+        db,
+        target,
+        attempt,
+        {
+          outcome: "ambiguous",
+          sanitizedResponse: {
+            ...result.sanitizedResponse,
+            reason: "provider_acceptance_missing_status_handle",
+          },
+          error: {
+            code: "missing_status_handle",
+            message:
+              "The provider accepted the request without a status identifier. Review the platform before retrying.",
+            retryable: false,
+          },
+        },
+        requestSentAt,
+      );
+      return queueResult(
+        target,
+        "ambiguous_provider_acceptance",
+        "needs_review",
+      );
+    }
     await db.update(`post_targets?id=eq.${target.id}`, {
       status: "processing",
       platform_upload_state: {
@@ -618,7 +764,11 @@ async function processClaimedQueueJob(
         attemptNumber: attempt.number,
       },
     });
-    await enqueueQueueJob(
+    await db.update(`publish_attempts?id=eq.${attempt.id}`, {
+      request_sent_at: requestSentAt,
+      sanitized_response: redactSecrets(result.sanitizedResponse),
+    });
+    await dependencies.enqueueQueueJob(
       env,
       {
         targetId: target.id,
@@ -629,7 +779,14 @@ async function processClaimedQueueJob(
     );
     return queueResult(target, "safe_continuation", "processing");
   }
-  await recordFinal(env, db, target, attempt, result);
+  await dependencies.recordFinal(
+    env,
+    db,
+    target,
+    attempt,
+    result,
+    requestSentAt,
+  );
   return queueResult(
     target,
     classifyPublishResult(result),
@@ -642,15 +799,18 @@ async function continueUploadSafely(
   db: SupabaseRest,
   target: TargetRecord,
   accessToken: string,
+  dependencies = claimedQueueJobDependencies(),
 ): Promise<QueueProcessResult> {
   try {
-    await continueUpload(env, db, target, accessToken);
+    await continueUpload(env, db, target, accessToken, dependencies);
     return queueResult(target, "safe_continuation", "processing");
   } catch (error) {
     if (isInfrastructureError(error)) throw error;
     const state = target.platform_upload_state;
     if (!state?.attemptId) throw error;
-    const normalized = adapterFor(target.platform, env).normalizeError(error);
+    const normalized = dependencies
+      .adapterFor(target.platform, env)
+      .normalizeError(error);
     const nextByte = Number(state.nextByte ?? 0);
     const chunkEnd = Math.min(
       nextByte + Number(state.chunkSize ?? 0),
@@ -666,7 +826,7 @@ async function continueUploadSafely(
       await db.update(`post_targets?id=eq.${target.id}`, {
         platform_upload_state: { ...state, uploadRetryCount },
       });
-      await enqueueQueueJob(
+      await dependencies.enqueueQueueJob(
         env,
         {
           targetId: target.id,
@@ -683,7 +843,7 @@ async function continueUploadSafely(
         status: "processing",
         platform_upload_state: { ...state, uploadComplete: "uncertain" },
       });
-      await enqueueQueueJob(
+      await dependencies.enqueueQueueJob(
         env,
         {
           targetId: target.id,
@@ -694,7 +854,7 @@ async function continueUploadSafely(
       );
       return queueResult(target, "ambiguous_provider_acceptance", "processing");
     }
-    await recordFinal(
+    await dependencies.recordFinal(
       env,
       db,
       target,
@@ -715,6 +875,7 @@ async function continueUploadSafely(
           retryable: false,
         },
       },
+      target.publish_request_sent_at,
     );
     return queueResult(
       target,
@@ -731,6 +892,7 @@ async function continueUpload(
   db: SupabaseRest,
   target: TargetRecord,
   accessToken: string,
+  dependencies = claimedQueueJobDependencies(),
 ) {
   const state = target.platform_upload_state;
   if (!state?.encryptedUrl || !state.nonce)
@@ -773,14 +935,13 @@ async function continueUpload(
     start,
     endExclusive,
   );
-  const uploadController = new AbortController();
-  const uploadTimeout = setTimeout(() => uploadController.abort(), 120_000);
-  let response: Response;
-  try {
-    response = await fetch(trustedUrl, {
+  const response = await providerRequest(
+    fetch,
+    trustedUrl,
+    {
+      operation: "idempotent",
       method: "PUT",
       redirect: "manual",
-      signal: uploadController.signal,
       headers: {
         ...(target.platform === "youtube"
           ? { Authorization: `Bearer ${accessToken}` }
@@ -790,36 +951,30 @@ async function continueUpload(
         "Content-Range": `bytes ${start}-${endExclusive - 1}/${state.totalBytes}`,
       },
       body: sourceBody,
-    });
-  } catch {
-    throw {
-      name: "NetworkError",
-      code: "upload_network_error",
-      message: "Resumable upload request failed",
-      ambiguous: true,
-    };
-  } finally {
-    clearTimeout(uploadTimeout);
-  }
+    },
+    120_000,
+  );
   const accepted =
     response.ok || (target.platform === "youtube" && response.status === 308);
   if (!accepted)
-    throw {
-      status: response.status,
-      body: { message: (await response.text()).slice(0, 500) },
-    };
+    throw providerHttpError(
+      response.status,
+      { message: (await response.text()).slice(0, 500) },
+      "idempotent",
+    );
   const nextByte = acceptedUploadByte(target.platform, response, endExclusive);
   if (nextByte === start) {
-    throw {
-      status: 503,
-      body: { message: "Resumable upload made no progress" },
-    };
+    throw providerHttpError(
+      503,
+      { message: "Resumable upload made no progress" },
+      "idempotent",
+    );
   }
   if (nextByte < Number(state.totalBytes)) {
     await db.update(`post_targets?id=eq.${target.id}`, {
       platform_upload_state: { ...state, nextByte, uploadRetryCount: 0 },
     });
-    await enqueueQueueJob(
+    await dependencies.enqueueQueueJob(
       env,
       {
         targetId: target.id,
@@ -846,7 +1001,7 @@ async function continueUpload(
       uploadComplete: true,
     },
   });
-  await enqueueQueueJob(
+  await dependencies.enqueueQueueJob(
     env,
     {
       targetId: target.id,
@@ -857,11 +1012,12 @@ async function continueUpload(
   );
 }
 
-async function pollStatus(
+export async function pollStatus(
   env: Env,
   db: SupabaseRest,
   target: TargetRecord,
   accessToken: string,
+  dependencies = claimedQueueJobDependencies(),
 ): Promise<QueueProcessResult> {
   const state = target.platform_upload_state;
   if (!state?.attemptId) throw new Error("Publish attempt state is missing");
@@ -871,29 +1027,37 @@ async function pollStatus(
       id: state?.attemptId as string,
       number: Number(state?.attemptNumber ?? 1),
     };
-    await recordFinal(env, db, target, attempt, {
-      outcome: "ambiguous",
-      sanitizedResponse: { reason: "missing_status_handle" },
-      error: {
-        code: "missing_status_handle",
-        message:
-          "The upload completed but no platform status identifier was returned.",
-        retryable: false,
+    await dependencies.recordFinal(
+      env,
+      db,
+      target,
+      attempt,
+      {
+        outcome: "ambiguous",
+        sanitizedResponse: { reason: "missing_status_handle" },
+        error: {
+          code: "missing_status_handle",
+          message:
+            "The upload completed but no platform status identifier was returned.",
+          retryable: false,
+        },
       },
-    });
+      target.publish_request_sent_at,
+    );
     return queueResult(target, "ambiguous_provider_acceptance", "needs_review");
   }
   let result: PublishResult;
   try {
-    result = await adapterFor(target.platform, env).getPublishStatus(
-      accessToken,
-      statusHandle,
-    );
+    result = await dependencies
+      .adapterFor(target.platform, env)
+      .getPublishStatus(accessToken, statusHandle);
   } catch (error) {
-    const normalized = adapterFor(target.platform, env).normalizeError(error);
+    const normalized = dependencies
+      .adapterFor(target.platform, env)
+      .normalizeError(error);
     if (normalized.retryable && !normalized.ambiguous) {
       // Polling can safely continue; this never creates another publish request.
-      await enqueueQueueJob(
+      await dependencies.enqueueQueueJob(
         env,
         {
           targetId: target.id,
@@ -904,7 +1068,7 @@ async function pollStatus(
       );
       return queueResult(target, "safe_continuation", "processing");
     }
-    await recordFinal(
+    await dependencies.recordFinal(
       env,
       db,
       target,
@@ -924,6 +1088,7 @@ async function pollStatus(
           retryable: false,
         },
       },
+      target.publish_request_sent_at,
     );
     return queueResult(
       target,
@@ -942,7 +1107,7 @@ async function pollStatus(
         },
       });
     }
-    await enqueueQueueJob(
+    await dependencies.enqueueQueueJob(
       env,
       {
         targetId: target.id,
@@ -967,7 +1132,7 @@ async function pollStatus(
       };
     }
   }
-  await recordFinal(
+  await dependencies.recordFinal(
     env,
     db,
     target,
@@ -976,6 +1141,7 @@ async function pollStatus(
       number: Number(state.attemptNumber ?? 1),
     },
     result,
+    target.publish_request_sent_at,
   );
   return queueResult(target, classifyPublishResult(result), result.outcome);
 }

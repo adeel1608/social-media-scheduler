@@ -30,7 +30,10 @@ begin
       )
     order by candidate.updated_at, candidate.id
     for update skip locked
-    limit greatest(1, least(p_limit, 500))
+    -- A zero limit is a deliberately non-mutating deployment preflight. It
+    -- proves that PostgREST can resolve and authorize this RPC before a Worker
+    -- which depends on stale-target recovery is deployed.
+    limit greatest(0, least(p_limit, 500))
   )
   update public.post_targets claimed
   set lease_owner = p_worker_id,

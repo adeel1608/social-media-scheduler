@@ -190,7 +190,7 @@ describe("official API adapters", () => {
       },
       fetcher,
     );
-    const result = await adapter.publish({
+    const result = await adapter.preflightPublish!({
       accountId: "u",
       accessToken: "t",
       idempotencyKey: "k",
@@ -244,7 +244,7 @@ describe("official API adapters", () => {
       },
       fetcher,
     );
-    const result = await adapter.publish({
+    const result = await adapter.preflightPublish!({
       accountId: "u",
       accessToken: "t",
       idempotencyKey: "k",
@@ -274,6 +274,94 @@ describe("official API adapters", () => {
     });
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["network", undefined],
+    ["429", 429],
+    ["5xx", 503],
+  ] as const)(
+    "keeps read-only TikTok creator-info POST %s failures safely retryable",
+    async (_case, status) => {
+      const fetcher = vi.fn<typeof fetch>();
+      if (status) {
+        fetcher.mockResolvedValueOnce(new Response("{}", { status }));
+      } else {
+        fetcher.mockRejectedValueOnce(new Error("network unavailable"));
+      }
+      const adapter = new TikTokAdapter(
+        {
+          clientKey: "key",
+          clientSecret: "secret",
+          contentPostingAudited: false,
+        },
+        fetcher,
+      );
+
+      let failure: unknown;
+      try {
+        await adapter.preflightPublish!({
+          accountId: "u",
+          accessToken: "t",
+          idempotencyKey: "k",
+          metadata: {
+            title: "Video",
+            contentType: "video",
+            privacyLevel: "SELF_ONLY",
+            disableComment: true,
+            disableDuet: true,
+            disableStitch: true,
+            commercialContent: false,
+            yourBrand: false,
+            brandedContent: false,
+            aiGenerated: false,
+          },
+          media: [{ ...video, durationSeconds: 30 }],
+          deliveryUrls: ["https://media.test/v"],
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(adapter.normalizeError(failure)).toMatchObject({
+        retryable: true,
+        ambiguous: false,
+      });
+    },
+  );
+
+  it.each([
+    ["network", undefined],
+    ["429", 429],
+    ["5xx", 503],
+  ] as const)(
+    "keeps read-only TikTok status POST %s failures safely retryable",
+    async (_case, status) => {
+      const fetcher = vi.fn<typeof fetch>();
+      if (status) {
+        fetcher.mockResolvedValueOnce(new Response("{}", { status }));
+      } else {
+        fetcher.mockRejectedValueOnce(new Error("network unavailable"));
+      }
+      const adapter = new TikTokAdapter(
+        {
+          clientKey: "key",
+          clientSecret: "secret",
+          contentPostingAudited: false,
+        },
+        fetcher,
+      );
+
+      let failure: unknown;
+      try {
+        await adapter.getPublishStatus("token", "handle");
+      } catch (error) {
+        failure = error;
+      }
+      expect(adapter.normalizeError(failure)).toMatchObject({
+        retryable: true,
+        ambiguous: false,
+      });
+    },
+  );
 
   it("sends TikTok photo AI disclosure at the documented top level", async () => {
     const fetcher = vi
@@ -309,7 +397,7 @@ describe("official API adapters", () => {
       },
       fetcher,
     );
-    const result = await adapter.publish({
+    const input = {
       accountId: "u",
       accessToken: "t",
       idempotencyKey: "k",
@@ -328,7 +416,9 @@ describe("official API adapters", () => {
       },
       media: [image],
       deliveryUrls: ["https://media.test/photo"],
-    });
+    };
+    await expect(adapter.preflightPublish!(input)).resolves.toBeNull();
+    const result = await adapter.publish(input);
 
     expect(result).toMatchObject({
       outcome: "processing",
@@ -339,6 +429,50 @@ describe("official API adapters", () => {
     ) as Record<string, unknown>;
     expect(payload).toMatchObject({ is_aigc: true });
     expect(payload.post_info).not.toHaveProperty("is_aigc");
+  });
+
+  it("treats an uncertain TikTok publish-init 5xx as ambiguous", async () => {
+    const adapter = new TikTokAdapter(
+      {
+        clientKey: "key",
+        clientSecret: "secret",
+        contentPostingAudited: false,
+      },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response("{}", { status: 503 })),
+    );
+    let failure: unknown;
+    try {
+      await adapter.publish({
+        accountId: "u",
+        accessToken: "t",
+        idempotencyKey: "k",
+        metadata: {
+          title: "Photo",
+          description: "Description",
+          contentType: "photo",
+          privacyLevel: "SELF_ONLY",
+          disableComment: true,
+          disableDuet: true,
+          disableStitch: true,
+          commercialContent: false,
+          yourBrand: false,
+          brandedContent: false,
+          aiGenerated: false,
+        },
+        media: [image],
+        deliveryUrls: ["https://media.test/photo"],
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(adapter.normalizeError(failure)).toMatchObject({
+      httpStatus: 503,
+      retryable: false,
+      ambiguous: true,
+    });
   });
 
   it("blocks public YouTube upload before API audit", async () => {
@@ -431,6 +565,43 @@ describe("official API adapters", () => {
       totalBytes: video.sizeBytes,
     });
     expect(fetcher.mock.calls[0]?.[1]?.body).not.toBeInstanceOf(ArrayBuffer);
+  });
+
+  it("treats an uncertain YouTube resumable-init 5xx as ambiguous", async () => {
+    const adapter = new YouTubeAdapter(
+      { clientId: "id", clientSecret: "secret", apiAuditApproved: true },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response("{}", { status: 503 })),
+    );
+    let failure: unknown;
+    try {
+      await adapter.publish({
+        accountId: "u",
+        accessToken: "t",
+        idempotencyKey: "k",
+        metadata: {
+          title: "Video",
+          description: "D",
+          contentType: "video",
+          categoryId: "22",
+          tags: [],
+          privacyStatus: "public",
+          madeForKids: false,
+          containsSyntheticMedia: false,
+        },
+        media: [video],
+        deliveryUrls: [],
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(adapter.normalizeError(failure)).toMatchObject({
+      httpStatus: 503,
+      retryable: false,
+      ambiguous: true,
+    });
   });
 
   it("uses the official custom-thumbnail upload endpoint", async () => {

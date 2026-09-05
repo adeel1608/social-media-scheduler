@@ -87,6 +87,9 @@ export function AccountsPage() {
   const [loading, setLoading] = useState(!demoMode);
   const [error, setError] = useState("");
   const [working, setWorking] = useState<string | null>(null);
+  const [pendingDisconnectCleanup, setPendingDisconnectCleanup] = useState<
+    Record<string, string>
+  >({});
   const [message, setMessage] = useState(
     demoMode
       ? "Demonstration mode does not read or change provider connections."
@@ -167,14 +170,37 @@ export function AccountsPage() {
 
   async function disconnect(account: ConnectedAccountSummary) {
     if (demoMode || !session) return;
+    if (
+      !window.confirm(
+        `Disconnect ${providerLabel(account.platform)}? Postline will revoke provider access before removing its local credentials.`,
+      )
+    )
+      return;
     setWorking(`disconnect:${account.id}`);
     setMessage("");
     try {
-      await apiRequest(
-        `/api/accounts/${encodeURIComponent(account.id)}`,
-        session,
-        { method: "DELETE" },
-      );
+      const result = await apiRequest<{
+        ok: boolean;
+        providerRevoked?: boolean;
+        localCleanupPending?: boolean;
+        confirmationToken?: string;
+      }>(`/api/accounts/${encodeURIComponent(account.id)}`, session, {
+        method: "DELETE",
+      });
+      if (
+        result.providerRevoked &&
+        result.localCleanupPending &&
+        result.confirmationToken
+      ) {
+        setPendingDisconnectCleanup((current) => ({
+          ...current,
+          [account.id]: result.confirmationToken!,
+        }));
+        setMessage(
+          `${providerLabel(account.platform)} access was revoked. Confirm local cleanup to finish disconnecting safely.`,
+        );
+        return;
+      }
       await refreshAccounts();
       setMessage(`${providerLabel(account.platform)} was disconnected.`);
     } catch (reason) {
@@ -182,6 +208,40 @@ export function AccountsPage() {
         reason instanceof Error
           ? reason.message
           : "The account could not be disconnected safely.",
+      );
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function confirmDisconnectCleanup(account: ConnectedAccountSummary) {
+    if (demoMode || !session) return;
+    const confirmationToken = pendingDisconnectCleanup[account.id];
+    if (!confirmationToken) return;
+    setWorking(`cleanup:${account.id}`);
+    setMessage("");
+    try {
+      await apiRequest(
+        `/api/accounts/${encodeURIComponent(account.id)}/disconnect/confirm`,
+        session,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirmationToken }),
+        },
+      );
+      setPendingDisconnectCleanup((current) => {
+        const next = { ...current };
+        delete next[account.id];
+        return next;
+      });
+      await refreshAccounts();
+      setMessage(`${providerLabel(account.platform)} was disconnected.`);
+    } catch (reason) {
+      setMessage(
+        reason instanceof Error
+          ? reason.message
+          : "Local disconnection cleanup could not be confirmed.",
       );
     } finally {
       setWorking(null);
@@ -324,7 +384,17 @@ export function AccountsPage() {
                             </div>
                           </span>
                         </div>
-                        {connected && (
+                        {pendingDisconnectCleanup[account.id] ? (
+                          <button
+                            className="danger-button compact"
+                            onClick={() =>
+                              void confirmDisconnectCleanup(account)
+                            }
+                            disabled={working === `cleanup:${account.id}`}
+                          >
+                            <Trash2 size={15} /> Confirm local cleanup
+                          </button>
+                        ) : connected ? (
                           <button
                             className="danger-button compact"
                             onClick={() => void disconnect(account)}
@@ -332,7 +402,7 @@ export function AccountsPage() {
                           >
                             <Trash2 size={15} /> Disconnect
                           </button>
-                        )}
+                        ) : null}
                       </section>
                     );
                   })}

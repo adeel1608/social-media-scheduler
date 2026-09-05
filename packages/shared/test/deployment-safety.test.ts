@@ -81,4 +81,21 @@ describe("production deployment safety", () => {
     );
     expect(wrangler).toMatch(/^redact_query_string = true$/m);
   });
+
+  it("executes migrations in disposable Supabase and gates Worker deployment", () => {
+    expect(ciWorkflow).toContain("corepack pnpm exec supabase start");
+    expect(ciWorkflow).toContain("corepack pnpm db:test");
+    expect(ciWorkflow).toContain(
+      "corepack pnpm exec supabase stop --no-backup",
+    );
+    const migrationGate = workflow.indexOf(
+      "corepack pnpm db:verify:production",
+    );
+    const workerDeploy = workflow.indexOf("Deploy Worker");
+    expect(migrationGate).toBeGreaterThan(0);
+    expect(workerDeploy).toBeGreaterThan(migrationGate);
+    expect(workflow).toContain(
+      "SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}",
+    );
+  });
 });

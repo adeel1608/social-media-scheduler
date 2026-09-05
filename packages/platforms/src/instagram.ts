@@ -105,7 +105,7 @@ export class InstagramAdapter implements PlatformAdapter {
     const short = await jsonRequest<{ access_token: string; user_id: number }>(
       this.fetcher,
       "https://api.instagram.com/oauth/access_token",
-      { method: "POST", body },
+      { operation: "idempotent", method: "POST", body },
     );
     const longUrl = new URL(`https://graph.instagram.com/access_token`);
     longUrl.search = new URLSearchParams({
@@ -116,7 +116,7 @@ export class InstagramAdapter implements PlatformAdapter {
     const long = await jsonRequest<{
       access_token: string;
       expires_in: number;
-    }>(this.fetcher, longUrl.toString());
+    }>(this.fetcher, longUrl.toString(), { operation: "idempotent" });
     return {
       accessToken: long.access_token,
       accountId: String(short.user_id),
@@ -139,7 +139,7 @@ export class InstagramAdapter implements PlatformAdapter {
     const data = await jsonRequest<{
       access_token: string;
       expires_in: number;
-    }>(this.fetcher, url.toString());
+    }>(this.fetcher, url.toString(), { operation: "idempotent" });
     return {
       ...tokens,
       accessToken: data.access_token,
@@ -151,7 +151,10 @@ export class InstagramAdapter implements PlatformAdapter {
   async disconnect(accessToken: string): Promise<void> {
     const url = new URL("https://graph.instagram.com/me/permissions");
     url.searchParams.set("access_token", accessToken);
-    await jsonRequest(this.fetcher, url.toString(), { method: "DELETE" });
+    await jsonRequest(this.fetcher, url.toString(), {
+      operation: "idempotent",
+      method: "DELETE",
+    });
   }
 
   async getAccountProfile(accessToken: string): Promise<AccountProfile> {
@@ -163,6 +166,7 @@ export class InstagramAdapter implements PlatformAdapter {
     const profile = await jsonRequest<Record<string, string>>(
       this.fetcher,
       url.toString(),
+      { operation: "read" },
     );
     return {
       id: profile.id!,
@@ -297,7 +301,11 @@ export class InstagramAdapter implements PlatformAdapter {
       const container = await jsonRequest<{ id: string }>(
         this.fetcher,
         `https://graph.instagram.com/${this.graphVersion}/${input.accountId}/media`,
-        { method: "POST", body: new URLSearchParams(params) },
+        {
+          operation: "publish",
+          method: "POST",
+          body: new URLSearchParams(params),
+        },
       );
       created.push(container.id);
     }
@@ -329,6 +337,7 @@ export class InstagramAdapter implements PlatformAdapter {
         return jsonRequest<{ status_code: string; status?: string }>(
           this.fetcher,
           url.toString(),
+          { operation: "read" },
         );
       }),
     );
@@ -359,6 +368,7 @@ export class InstagramAdapter implements PlatformAdapter {
         this.fetcher,
         `https://graph.instagram.com/${this.graphVersion}/${state.accountId}/media`,
         {
+          operation: "publish",
           method: "POST",
           body: new URLSearchParams({
             media_type: "CAROUSEL",
@@ -387,6 +397,7 @@ export class InstagramAdapter implements PlatformAdapter {
       this.fetcher,
       `https://graph.instagram.com/${this.graphVersion}/${state.accountId}/media_publish`,
       {
+        operation: "publish",
         method: "POST",
         body: new URLSearchParams({
           creation_id: creationId,
@@ -406,6 +417,7 @@ export class InstagramAdapter implements PlatformAdapter {
       const media = await jsonRequest<{ permalink?: string }>(
         this.fetcher,
         url.toString(),
+        { operation: "read" },
       );
       remoteUrl = media.permalink;
     } catch {
@@ -435,6 +447,7 @@ export class InstagramAdapter implements PlatformAdapter {
         await jsonRequest<Record<string, number>>(
           this.fetcher,
           fieldsUrl.toString(),
+          { operation: "read" },
         ),
       );
     } catch {
@@ -457,7 +470,7 @@ export class InstagramAdapter implements PlatformAdapter {
                 values?: Array<{ value: number }>;
                 total_value?: { value: number };
               }>;
-            }>(this.fetcher, url.toString());
+            }>(this.fetcher, url.toString(), { operation: "read" });
             const metric = result.data[0];
             if (metric)
               raw[metric.name] =

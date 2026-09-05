@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import type { Session } from "@supabase/supabase-js";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -53,7 +59,10 @@ beforeEach(() => {
   window.history.replaceState({}, "", "/accounts");
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("authoritative Connected Accounts UI", () => {
   it("renders an honest loading state", () => {
@@ -186,5 +195,51 @@ describe("authoritative Connected Accounts UI", () => {
     expect(output).not.toContain("ciphertext-browser-sentinel");
     expect(output).not.toContain("refresh-browser-sentinel");
     expect(output).not.toContain("nonce-browser-sentinel");
+  });
+
+  it("requires confirmation before requesting provider revocation", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    mocks.apiRequest.mockResolvedValueOnce({ data: [account("youtube")] });
+    render(<AccountsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(mocks.apiRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("finishes local cleanup without repeating a successful provider revocation", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mocks.apiRequest
+      .mockResolvedValueOnce({ data: [account("tiktok")] })
+      .mockResolvedValueOnce({
+        ok: false,
+        providerRevoked: true,
+        localCleanupPending: true,
+        confirmationToken: "signed-confirmation",
+      })
+      .mockResolvedValueOnce({ ok: true, providerRevoked: true })
+      .mockResolvedValueOnce({ data: [] });
+    render(<AccountsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    expect(
+      await screen.findByText(/access was revoked.*confirm local cleanup/i),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm local cleanup" }),
+    );
+
+    await screen.findByText("TikTok was disconnected.");
+    expect(mocks.apiRequest.mock.calls[1]).toMatchObject([
+      "/api/accounts/tiktok-account",
+      session,
+      { method: "DELETE" },
+    ]);
+    expect(mocks.apiRequest.mock.calls[2]?.[0]).toBe(
+      "/api/accounts/tiktok-account/disconnect/confirm",
+    );
+    expect(
+      JSON.parse(String(mocks.apiRequest.mock.calls[2]?.[2]?.body)),
+    ).toEqual({ confirmationToken: "signed-confirmation" });
   });
 });

@@ -12,6 +12,13 @@ export interface RevocableAccount {
   encryption_key_version: string;
 }
 
+export class LocalDisconnectPendingError extends Error {
+  constructor() {
+    super("Provider revocation succeeded but local cleanup is still pending");
+    this.name = "LocalDisconnectPendingError";
+  }
+}
+
 interface RevocationDependencies {
   decrypt(account: RevocableAccount): Promise<string>;
   disconnect(platform: Platform, accessToken: string): Promise<void>;
@@ -42,7 +49,11 @@ export async function revokeBeforeLocalDisconnect(
 ): Promise<void> {
   const accessToken = await dependencies.decrypt(account);
   await dependencies.disconnect(account.platform, accessToken);
-  await markLocallyDisconnected();
+  try {
+    await markLocallyDisconnected();
+  } catch {
+    throw new LocalDisconnectPendingError();
+  }
 }
 
 export async function revokeAccountsForInstallationDeletion(
