@@ -13,7 +13,21 @@ Each deployment has one owner. Supabase authenticates with a one-time magic link
 - Production configuration requires each provider callback to be the exact path on `WORKER_PUBLIC_URL`; redirects cannot contain credentials, query strings, or fragments.
 - Provider upload-session URLs are encrypted. Attempts/logs/email pass through structural redaction and never include tokens or signed media URLs.
 
-Generate a 32-byte base64 encryption key locally. To rotate, deploy code able to read old/new versions, re-encrypt every account and active upload session in a controlled transaction/batch, verify, then remove the old key. Do not merely change `TOKEN_ENCRYPTION_KEY_VERSION`.
+Generate a 32-byte base64 encryption key locally. Key versions are canonical
+lowercase identifiers such as `v1` or `v2`. The current key uses
+`TOKEN_ENCRYPTION_KEY`; a historical `v1` key uses the secret binding
+`TOKEN_ENCRYPTION_KEY_V1` (and so on). Decryption resolves only the version
+stored with the ciphertext and fails closed if that exact key is unavailable.
+To rotate, first deploy code and the historical binding able to read both
+versions, re-encrypt every account and active upload session in a controlled
+transaction/batch, verify, and only then remove the old binding. Do not merely
+change `TOKEN_ENCRYPTION_KEY_VERSION` or silently try the current key.
+
+Existing ciphertext predates additional authenticated data (AAD). Adding AAD
+would make existing records unreadable unless it is introduced through an
+explicit ciphertext-format version and controlled re-encryption migration; it
+is therefore deferred rather than being applied incompatibly during a key
+resolver change.
 
 ## API controls
 
@@ -31,13 +45,13 @@ Generate a 32-byte base64 encryption key locally. To rotate, deploy code able to
 - Production configuration fails closed at the HTTP, scheduled, and queue entry points. Except for the diagnostic `/health` response, an incomplete production Worker returns 503 before authentication, callbacks, delivery, or application routes run. Mock adapters exist only as injected test fetches; there is no production mock fallback.
 - Real publishing requires `LIVE_TEST_CONFIRM=true`.
 - TikTok and YouTube public requests remain invalid while the provider audit flag is false. Postline never silently changes requested public content to private.
-- The consumer writes `publish_request_sent_at` before sending. A duplicate job cannot automatically resend. API failure is recorded and Queue delivery is acknowledged. Ambiguity becomes `needs_review`.
+- The consumer writes `publish_request_sent_at` before sending. Instagram additionally writes a durable phase marker immediately before every non-idempotent child, carousel-parent, and final publish request. Read-only polling cannot perform provider writes. A duplicate job cannot automatically resend an unresolved phase; ambiguity becomes `needs_review` and is never blindly republished. Durable provider/validation outcomes are acknowledged, while infrastructure failures receive five bounded Queue retries before the dead-letter queue.
 
 ## Data handling
 
 UploadThing Free source files are public-readable through opaque, hard-to-guess URLs; signed Postline delivery URLs do not make those underlying files private. When all selected targets succeed, media is retained seven days and deleted only after cleanup rechecks database state. Failed, ambiguous, incomplete and pending media is kept until it is safe for owner action. Deletion changes quota accounting only after UploadThing confirms deletion or absence. Metadata, audit records and analytics remain until deletion.
 
-Disconnect requests provider revocation where supported before encrypted credentials are destroyed. Installation deletion does not delete already-published provider content; this is stated in the public deletion template.
+Disconnect requests use an owner/account-bound, expiring server-side transaction. A write-ahead transition allows only one provider revocation request; response loss, refresh, browser restart, and repeated DELETE cannot replay that provider write. Local credential destruction and completion are one database transaction, and the browser rehydrates pending cleanup without receiving credentials. Unknown provider outcomes remain explicitly uncertain; Postline does not reinterpret an error as “already revoked” without documented provider semantics. Installation deletion does not delete already-published provider content; this is stated in the public deletion template.
 
 ## Dependency and source security
 

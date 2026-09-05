@@ -19,14 +19,63 @@ describe("token encryption", () => {
     expect(first.ciphertext).not.toBe(second.ciphertext);
     expect(first.nonce).not.toBe(second.nonce);
     expect(first.keyVersion).toBe("v3");
-    await expect(decryptSecret(first, key)).resolves.toBe("access-token-value");
+    await expect(
+      decryptSecret(first, (version) => (version === "v3" ? key : undefined)),
+    ).resolves.toBe("access-token-value");
   });
 
   it("rejects the wrong key", async () => {
     const encrypted = await encryptSecret("secret", key);
     await expect(
-      decryptSecret(encrypted, Buffer.alloc(32, 8).toString("base64")),
-    ).rejects.toThrow();
+      decryptSecret(encrypted, (version) =>
+        version === "v1" ? Buffer.alloc(32, 8).toString("base64") : undefined,
+      ),
+    ).rejects.toThrow("could not be decrypted");
+  });
+
+  it("resolves historical versions explicitly and supports rotation rollback", async () => {
+    const nextKey = Buffer.alloc(32, 9).toString("base64");
+    const beforeRotation = await encryptSecret("old-value", key, "v1");
+    const afterRotation = await encryptSecret("new-value", nextKey, "v2");
+    const rotatedKeys = (version: string) =>
+      ({ v1: key, v2: nextKey })[version];
+
+    await expect(decryptSecret(beforeRotation, rotatedKeys)).resolves.toBe(
+      "old-value",
+    );
+    await expect(decryptSecret(afterRotation, rotatedKeys)).resolves.toBe(
+      "new-value",
+    );
+
+    const rolledBackKeys = (version: string) =>
+      ({ v1: key, v2: nextKey })[version];
+    await expect(decryptSecret(afterRotation, rolledBackKeys)).resolves.toBe(
+      "new-value",
+    );
+  });
+
+  it("fails closed when a stored key version is unavailable", async () => {
+    const encrypted = await encryptSecret("must-not-leak", key, "v7");
+    await expect(
+      decryptSecret(encrypted, () => undefined),
+    ).rejects.toMatchObject({
+      code: "key_unavailable",
+      message: "The required encryption key version is unavailable.",
+    });
+  });
+
+  it("sanitizes malformed ciphertext and authentication failures", async () => {
+    const encrypted = await encryptSecret("sensitive-plaintext", key, "v1");
+    const resolver = () => key;
+    for (const candidate of [
+      { ...encrypted, ciphertext: "not-base64" },
+      { ...encrypted, nonce: Buffer.alloc(12, 4).toString("base64") },
+    ]) {
+      await expect(decryptSecret(candidate, resolver)).rejects.toMatchObject({
+        code: "decryption_failed",
+        message: "The encrypted value could not be decrypted.",
+      });
+    }
   });
 });
 
@@ -79,6 +128,29 @@ describe("safe diagnostics", () => {
     expect(JSON.stringify(redacted)).not.toContain("abc.def");
     expect(JSON.stringify(redacted)).not.toContain("very-secret");
     expect(redacted).toMatchObject({ accessToken: "[REDACTED]" });
+  });
+
+  it("redacts OAuth queries, PKCE values, cookies, and Error messages", () => {
+    const redacted = redactSecrets({
+      callback:
+        "https://worker.test/callback?code=oauth-code&state=oauth-state&code_verifier=pkce-value",
+      headers: "Cookie: session=cookie-value\nAuthorization: Basic credential",
+      error: new Error(
+        "Failed https://worker.test/callback?code=oauth-code&state=oauth-state",
+      ),
+    });
+    const output = JSON.stringify(redacted);
+    for (const sensitive of [
+      "oauth-code",
+      "oauth-state",
+      "pkce-value",
+      "cookie-value",
+      "Basic credential",
+    ]) {
+      expect(output).not.toContain(sensitive);
+    }
+    expect(output).toContain("code=[REDACTED]");
+    expect(output).toContain("state=[REDACTED]");
   });
 
   it("creates stable versioned idempotency keys", () => {

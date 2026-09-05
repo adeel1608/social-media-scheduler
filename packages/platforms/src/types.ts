@@ -93,10 +93,16 @@ export interface PlatformAdapter {
     metadata: PlatformMetadata,
     media: MediaDescriptor[],
   ): ValidationResult;
+  preflightPublish?(input: PublishInput): Promise<PublishResult | null>;
   publish(input: PublishInput): Promise<PublishResult>;
   getPublishStatus(
     accessToken: string,
     statusHandle: string,
+  ): Promise<PublishResult>;
+  executePublishWrite?(
+    input: PublishInput,
+    statusHandle: string,
+    phase: string,
   ): Promise<PublishResult>;
   fetchAnalytics(request: AnalyticsRequest): Promise<NormalizedMetric[]>;
   uploadThumbnail?(

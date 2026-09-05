@@ -5,6 +5,19 @@ export interface EncryptedValue {
   keyVersion: string;
 }
 
+export type EncryptionKeyResolver = (keyVersion: string) => string | undefined;
+
+export class SecretDecryptionError extends Error {
+  constructor(readonly code: "key_unavailable" | "decryption_failed") {
+    super(
+      code === "key_unavailable"
+        ? "The required encryption key version is unavailable."
+        : "The encrypted value could not be decrypted.",
+    );
+    this.name = "SecretDecryptionError";
+  }
+}
+
 function toBase64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
 }
@@ -55,15 +68,22 @@ export async function encryptSecret(
 
 export async function decryptSecret(
   value: EncryptedValue,
-  keyBase64: string,
+  resolveKey: EncryptionKeyResolver,
 ): Promise<string> {
-  if (value.algorithm !== "AES-GCM")
-    throw new Error("Unsupported token encryption algorithm");
-  const key = await importKey(keyBase64);
-  const plaintext = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: toArrayBuffer(fromBase64(value.nonce)) },
-    key,
-    toArrayBuffer(fromBase64(value.ciphertext)),
-  );
-  return new TextDecoder().decode(plaintext);
+  if (value.algorithm !== "AES-GCM") {
+    throw new SecretDecryptionError("decryption_failed");
+  }
+  const keyBase64 = resolveKey(value.keyVersion);
+  if (!keyBase64) throw new SecretDecryptionError("key_unavailable");
+  try {
+    const key = await importKey(keyBase64);
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: toArrayBuffer(fromBase64(value.nonce)) },
+      key,
+      toArrayBuffer(fromBase64(value.ciphertext)),
+    );
+    return new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
+  } catch {
+    throw new SecretDecryptionError("decryption_failed");
+  }
 }

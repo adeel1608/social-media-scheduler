@@ -6,8 +6,9 @@ All `/api/*` routes except OAuth provider callbacks and UploadThing's signed cal
 | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `GET /health`                                   | Minimal status only; 503 if production configuration is incomplete                                 |
 | `GET /api/setup`                                | Owner-only first-run service status                                                                |
-| `GET /api/accounts`                             | Safe connection metadata, never tokens                                                             |
-| `DELETE /api/accounts/:id`                      | Revoke provider token where supported, then destroy stored credentials                             |
+| `GET /api/accounts`                             | Safe connection metadata plus resumable disconnect-cleanup state, never tokens                     |
+| `DELETE /api/accounts/:id`                      | Start or resume a durable provider-revocation transaction without repeating an uncertain write     |
+| `POST /api/accounts/:id/disconnect/confirm`     | Atomically finish local cleanup for an owner/account-bound, expiring server transaction            |
 | `POST /api/oauth/:platform/start`               | Create short-lived state/PKCE and return official authorization URL                                |
 | `GET /api/oauth/:platform/callback`             | Validate/consume state, exchange code, encrypt token and connect profile                           |
 | `GET or POST /api/uploadthing`                  | Official UploadThing file route: owner-authorized initiation and SDK-verified completion callback  |

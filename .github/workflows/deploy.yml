@@ -55,6 +55,11 @@ jobs:
           VITE_DEMO_MODE: "false"
           VITE_OPERATOR_NAME: ${{ vars.OPERATOR_NAME }}
           VITE_PUBLIC_CONTACT_EMAIL: ${{ vars.PUBLIC_CONTACT_EMAIL }}
+      - name: Verify required production database migration
+        run: corepack pnpm db:verify:production
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       - name: Deploy Worker
         run: >-
           corepack pnpm --filter @scheduler/worker exec wrangler deploy

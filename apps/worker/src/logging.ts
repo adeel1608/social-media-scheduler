@@ -5,11 +5,22 @@ export type WorkerErrorCode =
   | "request_failed"
   | "queue_dispatch_failed"
   | "queue_job_failed"
+  | "queue_job_retrying"
+  | "queue_retry_exhausted"
+  | "queue_lease_release_failed"
+  | "stale_queue_dispatch_failed"
+  | "provider_revocation_incomplete"
+  | "notification_reconciliation_failed"
   | "media_retention_update_failed";
 
 interface WorkerErrorContext {
   requestId?: string;
   targetId?: string;
+  messageId?: string;
+  attempt?: number;
+  provider?: string;
+  state?: string;
+  classification?: string;
   missingKeys?: ReadonlyArray<keyof Env>;
   invalidKeys?: ReadonlyArray<keyof Env>;
 }
@@ -21,7 +32,7 @@ export function formatWorkerError(
   code: WorkerErrorCode,
   context: WorkerErrorContext = {},
 ): string {
-  const record: Record<string, string | Array<keyof Env>> = {
+  const record: Record<string, string | number | Array<keyof Env>> = {
     level: "error",
     message: code,
   };
@@ -30,6 +41,26 @@ export function formatWorkerError(
   }
   if (context.targetId && SAFE_IDENTIFIER.test(context.targetId)) {
     record.targetId = context.targetId;
+  }
+  if (context.messageId && SAFE_IDENTIFIER.test(context.messageId)) {
+    record.messageId = context.messageId;
+  }
+  if (
+    context.attempt !== undefined &&
+    Number.isSafeInteger(context.attempt) &&
+    context.attempt > 0 &&
+    context.attempt <= 100
+  ) {
+    record.attempt = context.attempt;
+  }
+  if (context.provider && SAFE_IDENTIFIER.test(context.provider)) {
+    record.provider = context.provider;
+  }
+  if (context.state && SAFE_IDENTIFIER.test(context.state)) {
+    record.state = context.state;
+  }
+  if (context.classification && SAFE_IDENTIFIER.test(context.classification)) {
+    record.classification = context.classification;
   }
   for (const [field, keys] of [
     ["missingKeys", context.missingKeys],

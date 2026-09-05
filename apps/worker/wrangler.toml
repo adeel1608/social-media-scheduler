@@ -22,7 +22,9 @@ queue = "social-scheduler-publish"
 queue = "social-scheduler-publish"
 max_batch_size = 5
 max_batch_timeout = 10
-max_retries = 0
+# Application terminal/ambiguous outcomes are acknowledged. Only thrown
+# infrastructure failures use these bounded retries before reaching the DLQ.
+max_retries = 5
 dead_letter_queue = "social-scheduler-dead-letter"
 
 [triggers]
@@ -31,3 +33,4 @@ crons = ["* * * * *"]
 [observability]
 enabled = true
 head_sampling_rate = 1
+redact_query_string = true

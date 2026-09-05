@@ -34,7 +34,7 @@ describe("official API adapters", () => {
       { appId: "app", appSecret: "secret", reviewApproved: true },
       fetcher,
     );
-    const result = await adapter.publish({
+    const input = {
       accountId: "ig-user",
       accessToken: "token",
       idempotencyKey: "key",
@@ -45,15 +45,22 @@ describe("official API adapters", () => {
       },
       media: [image],
       deliveryUrls: ["https://media.example.test/image.jpg?signature=x"],
-    });
+    };
+    const result = await adapter.publish(input);
     expect(result).toMatchObject({
       outcome: "processing",
     });
-    expect(result.statusHandle).toMatch(/^ig1\./);
+    expect(result.statusHandle).toMatch(/^ig2\./);
     expect(fetcher.mock.calls[0]?.[0]).toContain("graph.instagram.com");
-    const published = await adapter.getPublishStatus(
-      "token",
-      result.statusHandle!,
+    const ready = await adapter.getPublishStatus("token", result.statusHandle!);
+    expect(ready.nextProviderWrite).toEqual({
+      phase: "instagram_media_publish",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const published = await adapter.executePublishWrite!(
+      input,
+      ready.statusHandle!,
+      ready.nextProviderWrite!.phase,
     );
     expect(published).toMatchObject({
       outcome: "published",
@@ -69,6 +76,7 @@ describe("official API adapters", () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(response({ id: "child-1" }))
+      .mockResolvedValueOnce(response({ status_code: "FINISHED" }))
       .mockResolvedValueOnce(response({ id: "child-2" }))
       .mockResolvedValueOnce(response({ status_code: "FINISHED" }))
       .mockResolvedValueOnce(response({ status_code: "FINISHED" }))
@@ -79,29 +87,104 @@ describe("official API adapters", () => {
       { appId: "app", appSecret: "secret", reviewApproved: true },
       fetcher,
     );
-    const created = await adapter.publish({
+    const input = {
       accountId: "ig-user",
       accessToken: "token",
       idempotencyKey: "carousel-key",
       metadata: { caption: "Carousel", contentType: "carousel" },
       media: [image, { ...image, id: "33333333-3333-4333-8333-333333333333" }],
       deliveryUrls: ["https://media.test/1", "https://media.test/2"],
-    });
-    const parent = await adapter.getPublishStatus(
+    };
+    const created = await adapter.publish(input);
+    const secondChildReady = await adapter.getPublishStatus(
       "token",
       created.statusHandle!,
     );
-    expect(parent).toMatchObject({ outcome: "processing" });
-    expect(fetcher.mock.calls[4]?.[1]).toMatchObject({ method: "POST" });
-    const published = await adapter.getPublishStatus(
+    expect(secondChildReady.nextProviderWrite?.phase).toBe(
+      "instagram_child_container",
+    );
+    const secondChild = await adapter.executePublishWrite!(
+      input,
+      secondChildReady.statusHandle!,
+      secondChildReady.nextProviderWrite!.phase,
+    );
+    const parentReady = await adapter.getPublishStatus(
+      "token",
+      secondChild.statusHandle!,
+    );
+    expect(parentReady.nextProviderWrite?.phase).toBe(
+      "instagram_carousel_parent",
+    );
+    const parent = await adapter.executePublishWrite!(
+      input,
+      parentReady.statusHandle!,
+      parentReady.nextProviderWrite!.phase,
+    );
+    expect(fetcher.mock.calls[5]?.[1]).toMatchObject({ method: "POST" });
+    const publishReady = await adapter.getPublishStatus(
       "token",
       parent.statusHandle!,
+    );
+    expect(publishReady.nextProviderWrite?.phase).toBe(
+      "instagram_media_publish",
+    );
+    const published = await adapter.executePublishWrite!(
+      input,
+      publishReady.statusHandle!,
+      publishReady.nextProviderWrite!.phase,
     );
     expect(published).toMatchObject({
       outcome: "published",
       remoteContentId: "media-2",
     });
-    expect(fetcher.mock.calls[6]?.[0]).toContain("media_publish");
+    expect(fetcher.mock.calls[7]?.[0]).toContain("media_publish");
+  });
+
+  it("treats a successful Meta write without its remote ID as ambiguous", async () => {
+    const response = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200 });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ id: "container-1" }))
+      .mockResolvedValueOnce(response({ status_code: "FINISHED" }))
+      .mockResolvedValueOnce(response({}));
+    const adapter = new InstagramAdapter(
+      { appId: "app", appSecret: "secret", reviewApproved: true },
+      fetcher,
+    );
+    const input = {
+      accountId: "ig-user",
+      accessToken: "token",
+      idempotencyKey: "key",
+      metadata: {
+        caption: "Caption",
+        altText: "Alt",
+        contentType: "feed_image" as const,
+      },
+      media: [image],
+      deliveryUrls: ["https://media.example.test/image.jpg?signature=x"],
+    };
+    const created = await adapter.publish(input);
+    const ready = await adapter.getPublishStatus(
+      input.accessToken,
+      created.statusHandle!,
+    );
+
+    let failure: unknown;
+    try {
+      await adapter.executePublishWrite!(
+        input,
+        ready.statusHandle!,
+        ready.nextProviderWrite!.phase,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(adapter.normalizeError(failure)).toMatchObject({
+      code: "missing_remote_handle",
+      retryable: false,
+      ambiguous: true,
+    });
   });
 
   it("blocks TikTok public posting before audit instead of silently using private", async () => {
@@ -190,7 +273,7 @@ describe("official API adapters", () => {
       },
       fetcher,
     );
-    const result = await adapter.publish({
+    const result = await adapter.preflightPublish!({
       accountId: "u",
       accessToken: "t",
       idempotencyKey: "k",
@@ -244,7 +327,7 @@ describe("official API adapters", () => {
       },
       fetcher,
     );
-    const result = await adapter.publish({
+    const result = await adapter.preflightPublish!({
       accountId: "u",
       accessToken: "t",
       idempotencyKey: "k",
@@ -274,6 +357,94 @@ describe("official API adapters", () => {
     });
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["network", undefined],
+    ["429", 429],
+    ["5xx", 503],
+  ] as const)(
+    "keeps read-only TikTok creator-info POST %s failures safely retryable",
+    async (_case, status) => {
+      const fetcher = vi.fn<typeof fetch>();
+      if (status) {
+        fetcher.mockResolvedValueOnce(new Response("{}", { status }));
+      } else {
+        fetcher.mockRejectedValueOnce(new Error("network unavailable"));
+      }
+      const adapter = new TikTokAdapter(
+        {
+          clientKey: "key",
+          clientSecret: "secret",
+          contentPostingAudited: false,
+        },
+        fetcher,
+      );
+
+      let failure: unknown;
+      try {
+        await adapter.preflightPublish!({
+          accountId: "u",
+          accessToken: "t",
+          idempotencyKey: "k",
+          metadata: {
+            title: "Video",
+            contentType: "video",
+            privacyLevel: "SELF_ONLY",
+            disableComment: true,
+            disableDuet: true,
+            disableStitch: true,
+            commercialContent: false,
+            yourBrand: false,
+            brandedContent: false,
+            aiGenerated: false,
+          },
+          media: [{ ...video, durationSeconds: 30 }],
+          deliveryUrls: ["https://media.test/v"],
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(adapter.normalizeError(failure)).toMatchObject({
+        retryable: true,
+        ambiguous: false,
+      });
+    },
+  );
+
+  it.each([
+    ["network", undefined],
+    ["429", 429],
+    ["5xx", 503],
+  ] as const)(
+    "keeps read-only TikTok status POST %s failures safely retryable",
+    async (_case, status) => {
+      const fetcher = vi.fn<typeof fetch>();
+      if (status) {
+        fetcher.mockResolvedValueOnce(new Response("{}", { status }));
+      } else {
+        fetcher.mockRejectedValueOnce(new Error("network unavailable"));
+      }
+      const adapter = new TikTokAdapter(
+        {
+          clientKey: "key",
+          clientSecret: "secret",
+          contentPostingAudited: false,
+        },
+        fetcher,
+      );
+
+      let failure: unknown;
+      try {
+        await adapter.getPublishStatus("token", "handle");
+      } catch (error) {
+        failure = error;
+      }
+      expect(adapter.normalizeError(failure)).toMatchObject({
+        retryable: true,
+        ambiguous: false,
+      });
+    },
+  );
 
   it("sends TikTok photo AI disclosure at the documented top level", async () => {
     const fetcher = vi
@@ -309,7 +480,7 @@ describe("official API adapters", () => {
       },
       fetcher,
     );
-    const result = await adapter.publish({
+    const input = {
       accountId: "u",
       accessToken: "t",
       idempotencyKey: "k",
@@ -328,7 +499,9 @@ describe("official API adapters", () => {
       },
       media: [image],
       deliveryUrls: ["https://media.test/photo"],
-    });
+    };
+    await expect(adapter.preflightPublish!(input)).resolves.toBeNull();
+    const result = await adapter.publish(input);
 
     expect(result).toMatchObject({
       outcome: "processing",
@@ -339,6 +512,50 @@ describe("official API adapters", () => {
     ) as Record<string, unknown>;
     expect(payload).toMatchObject({ is_aigc: true });
     expect(payload.post_info).not.toHaveProperty("is_aigc");
+  });
+
+  it("treats an uncertain TikTok publish-init 5xx as ambiguous", async () => {
+    const adapter = new TikTokAdapter(
+      {
+        clientKey: "key",
+        clientSecret: "secret",
+        contentPostingAudited: false,
+      },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response("{}", { status: 503 })),
+    );
+    let failure: unknown;
+    try {
+      await adapter.publish({
+        accountId: "u",
+        accessToken: "t",
+        idempotencyKey: "k",
+        metadata: {
+          title: "Photo",
+          description: "Description",
+          contentType: "photo",
+          privacyLevel: "SELF_ONLY",
+          disableComment: true,
+          disableDuet: true,
+          disableStitch: true,
+          commercialContent: false,
+          yourBrand: false,
+          brandedContent: false,
+          aiGenerated: false,
+        },
+        media: [image],
+        deliveryUrls: ["https://media.test/photo"],
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(adapter.normalizeError(failure)).toMatchObject({
+      httpStatus: 503,
+      retryable: false,
+      ambiguous: true,
+    });
   });
 
   it("blocks public YouTube upload before API audit", async () => {
@@ -431,6 +648,43 @@ describe("official API adapters", () => {
       totalBytes: video.sizeBytes,
     });
     expect(fetcher.mock.calls[0]?.[1]?.body).not.toBeInstanceOf(ArrayBuffer);
+  });
+
+  it("treats an uncertain YouTube resumable-init 5xx as ambiguous", async () => {
+    const adapter = new YouTubeAdapter(
+      { clientId: "id", clientSecret: "secret", apiAuditApproved: true },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response("{}", { status: 503 })),
+    );
+    let failure: unknown;
+    try {
+      await adapter.publish({
+        accountId: "u",
+        accessToken: "t",
+        idempotencyKey: "k",
+        metadata: {
+          title: "Video",
+          description: "D",
+          contentType: "video",
+          categoryId: "22",
+          tags: [],
+          privacyStatus: "public",
+          madeForKids: false,
+          containsSyntheticMedia: false,
+        },
+        media: [video],
+        deliveryUrls: [],
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(adapter.normalizeError(failure)).toMatchObject({
+      httpStatus: 503,
+      retryable: false,
+      ambiguous: true,
+    });
   });
 
   it("uses the official custom-thumbnail upload endpoint", async () => {

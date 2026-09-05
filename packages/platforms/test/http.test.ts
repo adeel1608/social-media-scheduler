@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { genericNormalizeError, trustedUploadSessionUrl } from "../src/http";
+import {
+  genericNormalizeError,
+  jsonRequest,
+  trustedUploadSessionUrl,
+} from "../src/http";
 
 describe("platform error sanitization", () => {
   it("redacts credentials and URLs before errors are persisted or emailed", () => {
@@ -63,4 +67,73 @@ describe("platform error sanitization", () => {
       expect(() => trustedUploadSessionUrl(platform, url)).toThrow();
     }
   });
+
+  it("bounds outbound provider requests and returns a sanitized timeout error", async () => {
+    const fetcher = vi.fn<typeof fetch>(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("test URL and secret", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+
+    await expect(
+      jsonRequest(
+        fetcher,
+        "https://provider.example/token?code=sensitive",
+        { operation: "read" },
+        5,
+      ),
+    ).rejects.toEqual({
+      name: "NetworkError",
+      code: "network_error",
+      message: "Network request failed",
+      retryable: true,
+      ambiguous: false,
+    });
+  });
+
+  it.each([
+    ["read", true, false],
+    ["idempotent", true, false],
+    ["publish", false, true],
+  ] as const)(
+    "classifies network failures by %s operation semantics",
+    async (operation, retryable, ambiguous) => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockRejectedValue(new Error("timeout"));
+
+      await expect(
+        jsonRequest(fetcher, "https://provider.example/request", {
+          operation,
+          method: "POST",
+        }),
+      ).rejects.toMatchObject({ retryable, ambiguous });
+    },
+  );
+
+  it.each([
+    ["read", 429, true, false],
+    ["read", 503, true, false],
+    ["publish", 429, true, false],
+    ["publish", 503, false, true],
+  ] as const)(
+    "classifies %s HTTP %i responses without method inference",
+    async (operation, status, retryable, ambiguous) => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response("{}", { status }));
+
+      await expect(
+        jsonRequest(fetcher, "https://provider.example/request", {
+          operation,
+          method: operation === "read" ? "POST" : "PUT",
+        }),
+      ).rejects.toMatchObject({ status, retryable, ambiguous });
+    },
+  );
 });

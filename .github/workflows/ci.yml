@@ -3,7 +3,9 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "fix/**"
 
 permissions:
   contents: read
@@ -15,7 +17,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -30,6 +32,13 @@ jobs:
       - run: corepack pnpm test
       - run: corepack pnpm build:verify
       - run: corepack pnpm db:validate
+      - name: Start disposable Supabase and apply migrations
+        run: corepack pnpm exec supabase start >/dev/null
+      - name: Verify migrations against PostgreSQL
+        run: corepack pnpm db:test
+      - name: Stop disposable Supabase
+        if: always()
+        run: corepack pnpm exec supabase stop --no-backup
       - run: corepack pnpm secrets:scan
       - run: corepack pnpm audit:ci
 

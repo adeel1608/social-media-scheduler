@@ -2,6 +2,7 @@ import { decryptSecret } from "@scheduler/shared";
 
 import { adapterFor } from "./adapters";
 import { SupabaseRest } from "./database";
+import { encryptionKeyResolver } from "./encryption";
 import type { Env } from "./env";
 
 export async function syncAnalyticsBatch(
@@ -25,7 +26,7 @@ export async function syncAnalyticsBatch(
           algorithm: "AES-GCM",
           keyVersion: account.encryption_key_version,
         },
-        env.TOKEN_ENCRYPTION_KEY,
+        encryptionKeyResolver(env),
       );
       const adapter = adapterFor(target.platform, env);
       const metrics = await adapter.fetchAnalytics({

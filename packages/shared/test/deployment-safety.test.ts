@@ -70,11 +70,32 @@ describe("production deployment safety", () => {
     }
   });
 
-  it("keeps real publishing and automatic queue retries disabled", () => {
+  it("keeps real publishing disabled and queue recovery bounded", () => {
     expect(wrangler).toMatch(/^LIVE_TEST_CONFIRM = "false"$/m);
     expect(wrangler).toMatch(/^META_APP_REVIEW_APPROVED = "false"$/m);
     expect(wrangler).toMatch(/^TIKTOK_CONTENT_POSTING_AUDITED = "false"$/m);
     expect(wrangler).toMatch(/^YOUTUBE_API_AUDIT_APPROVED = "false"$/m);
-    expect(wrangler).toMatch(/^max_retries = 0$/m);
+    expect(wrangler).toMatch(/^max_retries = 5$/m);
+    expect(wrangler).toMatch(
+      /^dead_letter_queue = "social-scheduler-dead-letter"$/m,
+    );
+    expect(wrangler).toMatch(/^redact_query_string = true$/m);
+  });
+
+  it("executes migrations in disposable Supabase and gates Worker deployment", () => {
+    expect(ciWorkflow).toContain("corepack pnpm exec supabase start");
+    expect(ciWorkflow).toContain("corepack pnpm db:test");
+    expect(ciWorkflow).toContain(
+      "corepack pnpm exec supabase stop --no-backup",
+    );
+    const migrationGate = workflow.indexOf(
+      "corepack pnpm db:verify:production",
+    );
+    const workerDeploy = workflow.indexOf("Deploy Worker");
+    expect(migrationGate).toBeGreaterThan(0);
+    expect(workerDeploy).toBeGreaterThan(migrationGate);
+    expect(workflow).toContain(
+      "SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}",
+    );
   });
 });

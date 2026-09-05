@@ -10,9 +10,9 @@ Verified against current Workers, Cron, Queues, and Wrangler documentation on 20
 6. Configure a stable Worker HTTPS custom domain. Set `WORKER_PUBLIC_URL` to that origin and use the same origin in the web `VITE_API_URL`. UploadThing callbacks arrive at `/api/uploadthing`.
 7. Run the Worker dry-run, then use `corepack pnpm --dir apps/worker exec wrangler versions upload` to create a reviewed inactive code version. This command does not deploy, but the Worker must already exist. Deploy that specific version only after all configuration is real and the release is explicitly approved.
 8. Wrangler uses the committed queue bindings and `crons = ["* * * * *"]`. After the deliberate production deployment, verify Worker → Settings → Triggers → Cron Triggers and queue producer/consumer bindings.
-9. Confirm the queue consumer has `max_retries = 0`. Provider failures are recorded and acknowledged instead of automatically redelivered.
+9. Confirm the queue consumer has `max_retries = 5` and `dead_letter_queue = "social-scheduler-dead-letter"`. Durable provider/validation outcomes are recorded and acknowledged. Only thrown infrastructure failures are redelivered; after the bounded retries Cloudflare moves the message to the DLQ.
 10. For TikTok pull-based photo publication, verify the Worker `/delivery/` URL prefix or domain in TikTok. It must remain HTTPS and redirect-free while TikTok fetches it.
-11. Verify `/health`, sanitized logs, and analytics. Logs must contain request IDs and safe messages only.
+11. Verify `/health`, sanitized logs, and analytics. Logs must contain request IDs and safe messages only. Keep `[observability] redact_query_string = true` so OAuth codes, state, signatures, and other URL credentials are omitted from invocation logs.
 12. For the optional manual GitHub deployment workflow, configure the
     `CLOUDFLARE_PAGES_PROJECT` and `CLOUDFLARE_WORKER_NAME` variables with the
     clone owner's exact resource names. The workflow resolves its pinned Wrangler from the Worker

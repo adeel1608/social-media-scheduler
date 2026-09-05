@@ -12,6 +12,7 @@ import { adapterFor, redirectUriFor } from "./adapters";
 import type { Variables } from "./auth";
 import { ownerAuth } from "./auth";
 import { ownerDatabase, SupabaseRest } from "./database";
+import { encryptionKeyResolver } from "./encryption";
 import type { Env } from "./env";
 
 const oauth = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -94,7 +95,7 @@ oauth.get("/:platform/callback", async (c) => {
       algorithm: "AES-GCM",
       keyVersion: record.encryption_key_version,
     },
-    c.env.TOKEN_ENCRYPTION_KEY,
+    encryptionKeyResolver(c.env),
   );
   const adapter = adapterFor(platform, c.env);
   const tokens = await adapter.exchangeAuthorizationCode(
@@ -136,6 +137,9 @@ oauth.get("/:platform/callback", async (c) => {
       metadata: {
         displayName: profile.displayName,
         accountType: profile.accountType,
+        ...(typeof tokens.raw.refreshTokenExpiresAt === "string"
+          ? { refreshTokenExpiresAt: tokens.raw.refreshTokenExpiresAt }
+          : {}),
       },
     },
     "resolution=merge-duplicates,return=representation",

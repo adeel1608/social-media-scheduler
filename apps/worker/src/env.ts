@@ -156,6 +156,12 @@ export function configurationStatus(env: Env) {
       invalid.push("TOKEN_ENCRYPTION_KEY");
     }
   }
+  if (
+    env.TOKEN_ENCRYPTION_KEY_VERSION &&
+    !/^[a-z][a-z0-9]{0,31}$/.test(env.TOKEN_ENCRYPTION_KEY_VERSION)
+  ) {
+    invalid.push("TOKEN_ENCRYPTION_KEY_VERSION");
+  }
   if (env.UPLOADTHING_TOKEN) {
     try {
       uploadThingAppId(env.UPLOADTHING_TOKEN);

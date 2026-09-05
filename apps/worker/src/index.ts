@@ -10,6 +10,14 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 
 import { syncAnalyticsBatch } from "./analytics";
+import { sanitizeConnectedAccount } from "./accounts";
+import {
+  confirmDurableAccountDisconnect,
+  disconnectAccountDurably,
+  revokeAccountsForInstallationDeletion,
+  type DisconnectTransaction,
+  type RevocableAccount,
+} from "./account-revocation";
 import { adapterFor } from "./adapters";
 import type { Variables } from "./auth";
 import { ownerAuth } from "./auth";
@@ -22,7 +30,10 @@ import {
 import { ownerDatabase, SupabaseRest } from "./database";
 import oauthRoutes from "./oauth-routes";
 import { logWorkerError } from "./logging";
-import { processQueueJob, updateMediaRetentionForPost } from "./publisher";
+import { retryFailedNotifications } from "./notifications";
+import { updateMediaRetentionForPost } from "./publisher";
+import { handleQueueMessage } from "./queue-handler";
+import { recoverStaleQueueTargets } from "./queue-recovery";
 import {
   ACTIVE_MEDIA_LIMIT_BYTES,
   deleteUploadThingFile,
@@ -35,6 +46,8 @@ import {
 import { handleUploadThingRequest } from "./uploadthing";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 app.use("*", async (c, next) => {
   for (const [name, value] of Object.entries(securityHeaders()))
@@ -75,6 +88,11 @@ app.use(
     maxAge: 600,
   }),
 );
+
+app.use("/api/*", async (c, next) => {
+  await next();
+  c.header("Cache-Control", "private, no-store");
+});
 
 app.onError((_error, c) => {
   const requestId = c.req.header("CF-Ray");
@@ -169,43 +187,107 @@ app.get("/api/storage", async (c) => {
 
 app.get("/api/accounts", async (c) => {
   const db = ownerDatabase(c.env, c.get("jwt"));
-  const rows = await db.select(
-    `connected_accounts?owner_id=eq.${c.get("user").id}&select=id,platform,username,scopes,token_expires_at,connection_status,approval_state,metadata&order=platform`,
+  const [rows, transactions] = await Promise.all([
+    db.select<Array<Record<string, unknown>>>(
+      `connected_accounts?owner_id=eq.${c.get("user").id}&select=id,platform,username,connection_status,approval_state,metadata&order=platform`,
+    ),
+    db.select<DisconnectTransaction[]>(
+      `account_disconnect_transactions?owner_id=eq.${c.get("user").id}&state=neq.completed&select=account_id,operation_id,state,expires_at`,
+    ),
+  ]);
+  const cleanupByAccount = new Map(
+    transactions.map((transaction) => [transaction.account_id, transaction]),
   );
-  return c.json({ data: rows });
+  return c.json({
+    data: rows
+      .map((row) =>
+        sanitizeConnectedAccount({
+          ...row,
+          disconnect_cleanup: cleanupByAccount.get(String(row.id)),
+        }),
+      )
+      .filter((row) => row !== null),
+  });
 });
 
 app.delete("/api/accounts/:id", async (c) => {
   const db = ownerDatabase(c.env, c.get("jwt"));
-  const rows = await db.select<Array<Record<string, any>>>(
-    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&select=*&limit=1`,
+  const rows = await db.select<RevocableAccount[]>(
+    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&select=platform,encrypted_access_token,access_token_nonce,encryption_key_version&limit=1`,
   );
   const account = rows[0];
   if (!account) return c.json({ error: "account_not_found" }, 404);
-  const { decryptSecret } = await import("@scheduler/shared");
-  const { adapterFor } = await import("./adapters");
-  const accessToken = await decryptSecret(
-    {
-      ciphertext: account.encrypted_access_token,
-      nonce: account.access_token_nonce,
-      algorithm: "AES-GCM",
-      keyVersion: account.encryption_key_version,
-    },
-    c.env.TOKEN_ENCRYPTION_KEY,
+  const result = await disconnectAccountDurably(
+    c.env,
+    new SupabaseRest(c.env),
+    c.req.param("id"),
+    c.get("user").id,
+    account,
   );
-  await adapterFor(account.platform, c.env).disconnect(accessToken);
-  await db.update(
-    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}`,
+  if (result.completed)
+    return c.json({
+      ok: true,
+      providerRevoked: result.providerRevoked,
+      revocationUncertain: result.revocationUncertain,
+      alreadyCompleted: !result.completedNow,
+    });
+  return c.json(
     {
-      connection_status: "disconnected",
-      encrypted_access_token: "revoked",
-      access_token_nonce: "revoked",
-      encrypted_refresh_token: null,
-      refresh_token_nonce: null,
-      updated_at: new Date().toISOString(),
+      ok: false,
+      providerRevoked: result.providerRevoked,
+      revocationUncertain: result.revocationUncertain,
+      localCleanupPending: true,
+      disconnectCleanup: {
+        operationId: result.transaction.operation_id,
+        state: result.transaction.state,
+        expiresAt: result.transaction.expires_at,
+      },
     },
+    202,
   );
-  return c.json({ ok: true });
+});
+
+app.post("/api/accounts/:id/disconnect/confirm", async (c) => {
+  const input = (await c.req.json().catch(() => null)) as {
+    operationId?: unknown;
+  } | null;
+  const accountId = c.req.param("id");
+  const ownerId = c.get("user").id;
+  if (
+    typeof input?.operationId !== "string" ||
+    !uuidPattern.test(input.operationId)
+  ) {
+    return c.json({ error: "invalid_disconnect_confirmation" }, 400);
+  }
+  const rows = await ownerDatabase(c.env, c.get("jwt")).select<
+    DisconnectTransaction[]
+  >(
+    `account_disconnect_transactions?account_id=eq.${encodeURIComponent(accountId)}&owner_id=eq.${ownerId}&operation_id=eq.${encodeURIComponent(input.operationId)}&select=account_id,operation_id,state,expires_at,provider_outcome&limit=1`,
+  );
+  const transaction = rows[0];
+  if (!transaction)
+    return c.json({ error: "disconnect_cleanup_not_found" }, 404);
+  if (transaction.state === "completed")
+    return c.json({
+      ok: true,
+      providerRevoked: transaction.provider_outcome === "confirmed",
+      revocationUncertain: transaction.provider_outcome === "uncertain",
+      alreadyCompleted: true,
+    });
+  if (new Date(transaction.expires_at).getTime() <= Date.now())
+    return c.json({ error: "disconnect_cleanup_expired" }, 410);
+  const completed = await confirmDurableAccountDisconnect(
+    new SupabaseRest(c.env),
+    accountId,
+    ownerId,
+    input.operationId,
+  );
+  return c.json({
+    ok: true,
+    providerRevoked: completed.provider_outcome === "confirmed",
+    revocationUncertain: completed.provider_outcome === "uncertain",
+    alreadyCompleted: completed.completed_now !== true,
+  });
 });
 
 app.get("/api/queue", async (c) => {
@@ -345,26 +427,11 @@ app.post("/api/installation/delete", async (c) => {
       409,
     );
   const serviceDb = new SupabaseRest(c.env);
-  const accounts = await serviceDb.select<Array<Record<string, any>>>(
-    `connected_accounts?owner_id=eq.${ownerId}&select=*`,
+  const accounts = await serviceDb.select<RevocableAccount[]>(
+    `connected_accounts?owner_id=eq.${ownerId}&select=platform,encrypted_access_token,access_token_nonce,encryption_key_version`,
   );
-  for (const account of accounts) {
-    try {
-      const { decryptSecret } = await import("@scheduler/shared");
-      const token = await decryptSecret(
-        {
-          ciphertext: account.encrypted_access_token,
-          nonce: account.access_token_nonce,
-          algorithm: "AES-GCM",
-          keyVersion: account.encryption_key_version,
-        },
-        c.env.TOKEN_ENCRYPTION_KEY,
-      );
-      await adapterFor(account.platform, c.env).disconnect(token);
-    } catch {
-      // Continue local erasure when a provider token is already invalid or unreachable.
-    }
-  }
+  const providerRevocationIncomplete =
+    await revokeAccountsForInstallationDeletion(c.env, accounts);
   const media = await serviceDb.select<
     Array<{
       id: string;
@@ -428,7 +495,11 @@ app.post("/api/installation/delete", async (c) => {
       },
     },
   );
-  return c.json({ ok: true, authUserDeleted: authResponse.ok });
+  return c.json({
+    ok: true,
+    authUserDeleted: authResponse.ok,
+    providerRevocationIncomplete,
+  });
 });
 
 app.post("/api/posts", async (c) => {
@@ -694,6 +765,12 @@ const worker = {
     assertProductionConfigured(env);
     const db = new SupabaseRest(env);
     await syncConfiguredApprovalStates(env, db);
+    await recoverStaleQueueTargets(env, db);
+    context.waitUntil(
+      retryFailedNotifications(env).catch(() => {
+        logWorkerError("notification_reconciliation_failed");
+      }),
+    );
     const workerId = crypto.randomUUID();
     const claimed = await db.rpc<Array<{ id: string }>>("claim_due_targets", {
       p_worker_id: workerId,
@@ -734,16 +811,7 @@ const worker = {
   async queue(batch: MessageBatch<QueueJob>, env: Env) {
     assertProductionConfigured(env);
     for (const message of batch.messages) {
-      try {
-        await processQueueJob(env, message.body);
-      } catch {
-        logWorkerError("queue_job_failed", {
-          targetId: message.body.targetId,
-        });
-      } finally {
-        // API failures are recorded. Infrastructure delivery is acknowledged and never automatically retried.
-        message.ack();
-      }
+      await handleQueueMessage(env, message);
     }
   },
 };

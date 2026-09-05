@@ -26,6 +26,8 @@ export default defineConfig(({ mode }) => {
     ],
     server: { port: 5173, strictPort: true },
     preview: { port: 4173, strictPort: true },
-    build: { sourcemap: true },
+    // Keep source maps available for local troubleshooting without publishing
+    // downloadable application source alongside production assets.
+    build: { sourcemap: mode !== "production" },
   };
 });

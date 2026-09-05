@@ -25,14 +25,24 @@ const requiredTables = [
   "email_events",
   "audit_log",
   "rate_limit_buckets",
+  "account_disconnect_transactions",
 ];
 const missingTables = requiredTables.filter(
-  (table) => !sql.includes(`create table public.${table}`),
+  (table) =>
+    !sql.includes(`create table public.${table}`) &&
+    !sql.includes(`create table if not exists public.${table}`),
 );
 const requirements = {
   "atomic claim function":
     sql.includes("function public.claim_due_targets") &&
     sql.includes("for update skip locked"),
+  "stale publishing recovery":
+    sql.includes("function public.claim_stale_targets") &&
+    sql.includes("candidate.status in ('publishing', 'processing')") &&
+    sql.includes(
+      "grant execute on function public.claim_stale_targets(text, integer, integer, integer)",
+    ) &&
+    sql.includes("limit greatest(0, least(p_limit, 500))"),
   "row level security": requiredTables.every((table) =>
     sql.includes(`alter table public.${table} enable row level security`),
   ),
@@ -58,6 +68,22 @@ const requirements = {
     sql.includes(
       "revoke all on function public.rls_auto_enable() from public, anon, authenticated",
     ),
+  "durable notification reconciliation":
+    sql.includes("function app_private.enqueue_target_failure_email()") &&
+    sql.includes("post_targets_enqueue_failure_email") &&
+    sql.includes("on conflict (deduplication_key) do nothing") &&
+    sql.includes("email_events_delivery_retry_idx") &&
+    sql.includes("next_attempt_at"),
+  "durable disconnect recovery":
+    sql.includes("function public.begin_account_disconnect") &&
+    sql.includes(
+      "function public.mark_account_disconnect_revocation_started",
+    ) &&
+    sql.includes("function public.record_account_disconnect_revocation") &&
+    sql.includes("function public.complete_account_disconnect") &&
+    sql.includes("account_disconnect_owner_select") &&
+    sql.includes("provider_request_sent_at") &&
+    sql.includes("connected_accounts_clear_disconnect_on_reconnect"),
 };
 if (missingTables.length || Object.values(requirements).includes(false)) {
   console.error({ missingTables, requirements });

@@ -73,16 +73,20 @@ export function SettingsPage() {
     );
     if (confirmation !== "DELETE") return;
     try {
-      const result = await apiRequest<{ authUserDeleted: boolean }>(
-        "/api/installation/delete",
-        session,
-        { method: "POST", body: JSON.stringify({ confirmation }) },
-      );
-      setMessage(
-        result.authUserDeleted
-          ? "Installation data and the Supabase Auth user were deleted."
-          : "Installation data was deleted. Remove the remaining Auth user in Supabase if it still appears.",
-      );
+      const result = await apiRequest<{
+        authUserDeleted: boolean;
+        providerRevocationIncomplete: string[];
+      }>("/api/installation/delete", session, {
+        method: "POST",
+        body: JSON.stringify({ confirmation }),
+      });
+      const localResult = result.authUserDeleted
+        ? "Installation data and the Supabase Auth user were deleted."
+        : "Installation data was deleted. Remove the remaining Auth user in Supabase if it still appears.";
+      const revocationResult = result.providerRevocationIncomplete.length
+        ? ` External authorization could not be confirmed revoked for: ${result.providerRevocationIncomplete.join(", ")}. Remove Postline from those provider permission pages.`
+        : " Provider revocation completed for every stored connection.";
+      setMessage(`${localResult}${revocationResult}`);
       await signOut();
     } catch (reason) {
       setMessage(

@@ -29,6 +29,106 @@ export interface TikTokConfig {
   contentPostingAudited: boolean;
 }
 
+export const TIKTOK_REQUIRED_SCOPES = [
+  "user.info.basic",
+  "user.info.profile",
+  "user.info.stats",
+  "video.list",
+  "video.publish",
+] as const;
+
+interface TikTokTokenResponse {
+  access_token: string;
+  refresh_token: string;
+  open_id: string;
+  expires_in: number;
+  refresh_expires_in: number;
+  scope: string;
+}
+
+class TikTokProtocolError extends Error {
+  readonly ambiguous = false;
+
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "TikTokProtocolError";
+  }
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function parseTokenResponse(value: unknown): TikTokTokenResponse {
+  const data = objectValue(value);
+  if (
+    !data ||
+    typeof data.access_token !== "string" ||
+    data.access_token.length === 0 ||
+    typeof data.refresh_token !== "string" ||
+    data.refresh_token.length === 0 ||
+    typeof data.open_id !== "string" ||
+    data.open_id.length === 0 ||
+    typeof data.expires_in !== "number" ||
+    !Number.isFinite(data.expires_in) ||
+    data.expires_in <= 0 ||
+    typeof data.refresh_expires_in !== "number" ||
+    !Number.isFinite(data.refresh_expires_in) ||
+    data.refresh_expires_in <= 0 ||
+    typeof data.scope !== "string"
+  ) {
+    throw new TikTokProtocolError(
+      "invalid_tiktok_oauth_response",
+      "TikTok returned an invalid OAuth response.",
+    );
+  }
+  return {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    open_id: data.open_id,
+    expires_in: data.expires_in,
+    refresh_expires_in: data.refresh_expires_in,
+    scope: data.scope,
+  };
+}
+
+function parseGrantedScopes(value: string): string[] {
+  const scopes = [
+    ...new Set(value.split(",").map((scope) => scope.trim())),
+  ].filter(Boolean);
+  const missing = TIKTOK_REQUIRED_SCOPES.filter(
+    (required) => !scopes.includes(required),
+  );
+  if (missing.length > 0) {
+    throw new TikTokProtocolError(
+      "missing_tiktok_scopes",
+      "TikTok did not grant every scope required by this installation.",
+    );
+  }
+  return scopes;
+}
+
+function tokenSet(data: TikTokTokenResponse): TokenSet {
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    accountId: data.open_id,
+    expiresAt: new Date(Date.now() + data.expires_in * 1_000).toISOString(),
+    scopes: parseGrantedScopes(data.scope),
+    raw: {
+      open_id: data.open_id,
+      refreshTokenExpiresAt: new Date(
+        Date.now() + data.refresh_expires_in * 1_000,
+      ).toISOString(),
+    },
+  };
+}
+
 export class TikTokAdapter implements PlatformAdapter {
   readonly platform = "tiktok" as const;
 
@@ -68,37 +168,27 @@ export class TikTokAdapter implements PlatformAdapter {
       redirect_uri: redirectUri,
       ...(verifier ? { code_verifier: verifier } : {}),
     });
-    const data = await jsonRequest<Record<string, any>>(
+    const response = await jsonRequest<unknown>(
       this.fetcher,
       "https://open.tiktokapis.com/v2/oauth/token/",
       {
+        operation: "idempotent",
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
       },
     );
-    return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token,
-      accountId: data.open_id,
-      expiresAt: new Date(Date.now() + data.expires_in * 1_000).toISOString(),
-      scopes: String(data.scope ?? "")
-        .split(",")
-        .filter(Boolean),
-      raw: {
-        open_id: data.open_id,
-        refresh_expires_in: data.refresh_expires_in,
-      },
-    };
+    return tokenSet(parseTokenResponse(response));
   }
 
   async refreshAccessToken(tokens: TokenSet): Promise<TokenSet> {
     if (!tokens.refreshToken)
       throw new Error("TikTok refresh token is missing");
-    const data = await jsonRequest<Record<string, any>>(
+    const response = await jsonRequest<unknown>(
       this.fetcher,
       "https://open.tiktokapis.com/v2/oauth/token/",
       {
+        operation: "idempotent",
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -109,48 +199,76 @@ export class TikTokAdapter implements PlatformAdapter {
         }),
       },
     );
-    return {
-      ...tokens,
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token,
-      expiresAt: new Date(Date.now() + data.expires_in * 1_000).toISOString(),
-      scopes: String(data.scope ?? "")
-        .split(",")
-        .filter(Boolean),
-      raw: {
-        open_id: data.open_id,
-        refresh_expires_in: data.refresh_expires_in,
-      },
-    };
+    return tokenSet(parseTokenResponse(response));
   }
 
   async disconnect(accessToken: string): Promise<void> {
-    await jsonRequest(
-      this.fetcher,
-      "https://open.tiktokapis.com/v2/oauth/revoke/",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          client_key: this.config.clientKey,
-          token: accessToken,
-        }),
-      },
-    );
+    try {
+      const response = await jsonRequest<unknown>(
+        this.fetcher,
+        "https://open.tiktokapis.com/v2/oauth/revoke/",
+        {
+          operation: "idempotent",
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_key: this.config.clientKey,
+            client_secret: this.config.clientSecret,
+            token: accessToken,
+          }),
+        },
+      );
+      const data = objectValue(response);
+      if (!data || Object.keys(data).length !== 0) {
+        throw new TikTokProtocolError(
+          "invalid_tiktok_revoke_response",
+          "TikTok returned an invalid revocation response.",
+        );
+      }
+    } catch {
+      throw new TikTokProtocolError(
+        "tiktok_revoke_failed",
+        "TikTok token revocation failed.",
+      );
+    }
   }
 
   async getAccountProfile(accessToken: string): Promise<AccountProfile> {
-    const data = await jsonRequest<{ data: { user: Record<string, string> } }>(
+    const response = await jsonRequest<unknown>(
       this.fetcher,
       "https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url,username",
-      { headers: { Authorization: `Bearer ${accessToken}` } },
+      {
+        operation: "read",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
     );
-    const user = data.data.user;
+    const data = objectValue(response);
+    const nestedData = objectValue(data?.data);
+    const user = objectValue(nestedData?.user);
+    if (
+      !user ||
+      typeof user.open_id !== "string" ||
+      user.open_id.length === 0 ||
+      (typeof user.username !== "string" &&
+        typeof user.display_name !== "string")
+    ) {
+      throw new TikTokProtocolError(
+        "invalid_tiktok_profile_response",
+        "TikTok returned an invalid account profile.",
+      );
+    }
     return {
-      id: user.open_id!,
-      username: user.username ?? user.display_name!,
-      ...(user.display_name ? { displayName: user.display_name } : {}),
-      ...(user.avatar_url ? { avatarUrl: user.avatar_url } : {}),
+      id: user.open_id,
+      username:
+        typeof user.username === "string"
+          ? user.username
+          : (user.display_name as string),
+      ...(typeof user.display_name === "string"
+        ? { displayName: user.display_name }
+        : {}),
+      ...(typeof user.avatar_url === "string"
+        ? { avatarUrl: user.avatar_url }
+        : {}),
     };
   }
 
@@ -278,6 +396,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       "https://open.tiktokapis.com/v2/post/publish/creator_info/query/",
       {
+        operation: "read",
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -287,7 +406,7 @@ export class TikTokAdapter implements PlatformAdapter {
     );
   }
 
-  async publish(input: PublishInput) {
+  async preflightPublish(input: PublishInput) {
     const metadata = input.metadata as TikTokMetadata;
     if (
       metadata.privacyLevel === "PUBLIC_TO_EVERYONE" &&
@@ -359,6 +478,25 @@ export class TikTokAdapter implements PlatformAdapter {
         );
       }
     }
+    return null;
+  }
+
+  async publish(input: PublishInput) {
+    const metadata = input.metadata as TikTokMetadata;
+    if (
+      metadata.privacyLevel === "PUBLIC_TO_EVERYONE" &&
+      !this.config.contentPostingAudited
+    ) {
+      return {
+        outcome: "failed" as const,
+        sanitizedResponse: { blocked: "tiktok_audit_pending" },
+        error: {
+          code: "audit_required",
+          message: "TikTok public posting requires an approved audit.",
+          retryable: false,
+        },
+      };
+    }
     const headers = {
       Authorization: `Bearer ${input.accessToken}`,
       "Content-Type": "application/json; charset=UTF-8",
@@ -371,6 +509,7 @@ export class TikTokAdapter implements PlatformAdapter {
         this.fetcher,
         "https://open.tiktokapis.com/v2/post/publish/content/init/",
         {
+          operation: "publish",
           method: "POST",
           headers,
           body: JSON.stringify({
@@ -394,6 +533,14 @@ export class TikTokAdapter implements PlatformAdapter {
           }),
         },
       );
+      if (!result.data?.publish_id) {
+        throw {
+          code: "invalid_publish_response",
+          message: "TikTok accepted the request without a publish identifier.",
+          retryable: false,
+          ambiguous: true,
+        };
+      }
       return {
         outcome: "processing" as const,
         statusHandle: result.data.publish_id,
@@ -409,6 +556,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       "https://open.tiktokapis.com/v2/post/publish/video/init/",
       {
+        operation: "publish",
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -431,7 +579,26 @@ export class TikTokAdapter implements PlatformAdapter {
         }),
       },
     );
-    const uploadUrl = trustedUploadSessionUrl("tiktok", result.data.upload_url);
+    if (!result.data?.publish_id) {
+      throw {
+        code: "invalid_publish_response",
+        message: "TikTok accepted the request without a publish identifier.",
+        retryable: false,
+        ambiguous: true,
+      };
+    }
+    let uploadUrl: string;
+    try {
+      uploadUrl = trustedUploadSessionUrl("tiktok", result.data.upload_url);
+    } catch {
+      throw {
+        code: "invalid_upload_session",
+        message: "TikTok returned an invalid upload session.",
+        retryable: false,
+        ambiguous: true,
+        statusHandle: result.data.publish_id,
+      };
+    }
     return {
       outcome: "processing" as const,
       statusHandle: result.data.publish_id,
@@ -460,6 +627,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
       {
+        operation: "read",
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -503,6 +671,7 @@ export class TikTokAdapter implements PlatformAdapter {
       this.fetcher,
       `https://open.tiktokapis.com/v2/video/${endpoint}/?fields=${fields}`,
       {
+        operation: "read",
         method: "POST",
         headers: {
           Authorization: `Bearer ${request.accessToken}`,

@@ -1,5 +1,14 @@
 import type { Env } from "./env";
 
+export class DatabaseRequestError extends Error {
+  readonly retryable = true;
+
+  constructor(readonly status?: number) {
+    super("Database request failed.");
+    this.name = "DatabaseRequestError";
+  }
+}
+
 export class SupabaseRest {
   constructor(
     private readonly env: Env,
@@ -12,24 +21,29 @@ export class SupabaseRest {
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(this.url(path), {
-      ...init,
-      headers: {
-        apikey: this.apiKey,
-        Authorization: this.authorization,
-        "Content-Type": "application/json",
-        ...init.headers,
-      },
-    });
+    let response: Response;
+    try {
+      response = await fetch(this.url(path), {
+        ...init,
+        headers: {
+          apikey: this.apiKey,
+          Authorization: this.authorization,
+          "Content-Type": "application/json",
+          ...init.headers,
+        },
+      });
+    } catch {
+      throw new DatabaseRequestError();
+    }
     const text = await response.text();
     if (!response.ok) {
-      throw {
-        status: response.status,
-        body: text.slice(0, 1_000),
-        message: "Database request failed",
-      };
+      throw new DatabaseRequestError(response.status);
     }
-    return (text ? JSON.parse(text) : null) as T;
+    try {
+      return (text ? JSON.parse(text) : null) as T;
+    } catch {
+      throw new DatabaseRequestError(response.status);
+    }
   }
 
   select<T>(tableAndQuery: string): Promise<T> {

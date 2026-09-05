@@ -25,10 +25,14 @@ Connected-account tokens are encrypted with Web Crypto AES-256-GCM. The cipherte
 2. The database writes a post plus one independent `post_targets` row per platform with a stable versioned idempotency key.
 3. UTC cron calls `claim_due_targets`. PostgreSQL first blocks targets without a valid approved connection, reactivates past-due targets after authorization is restored, then uses `FOR UPDATE SKIP LOCKED` and a lease to claim due rows atomically.
 4. The Worker enqueues only `{ targetId, mode, requestedAt }`; credentials never enter Queue messages.
-5. The consumer loads and decrypts credentials server-side. The first provider request sets `publish_request_sent_at` before sending so duplicate deliveries cannot silently issue another publish request.
+5. The consumer loads and decrypts credentials server-side. The first provider request sets `publish_request_sent_at` before sending so duplicate deliveries cannot silently issue another publish request. Multi-write Instagram publication also stores a phase-specific write-ahead marker immediately before each child-container, carousel-parent, or `media_publish` write and durably replaces it with the returned handle/ID before continuing.
 6. Each target persists its own selected media IDs, so a YouTube thumbnail is not accidentally sent to Instagram/TikTok. Validated UploadThing ranges stream to chunk/resumable provider sessions. Session URLs are encrypted in `platform_upload_state`; sanitized attempts never include them.
-7. Processing polls may continue safely. A definite API failure is recorded and acknowledged with no automatic retry. A network-ambiguous publication becomes `needs_review` unless a provider status handle can reconcile it.
+7. Processing polls are read-only and may continue safely. Provider writes never occur inside the polling adapter method. A definite API failure is recorded and acknowledged with no automatic provider retry. A network-ambiguous publication or unresolved phase marker becomes `needs_review` unless a known provider handle can reconcile it. Infrastructure-only Queue failures use bounded delivery retries and a dead-letter queue. Cron leases and redispatches stale `publishing`/`processing` targets; an existing upload session or status handle is continued, while a target with a recorded provider request is never blindly resubmitted.
 8. A unique `email_events.deduplication_key` prevents duplicate failure email.
+
+## Account disconnection
+
+Disconnect starts with an owner/account-bound database transaction. The Worker decrypts the credential, atomically claims the one allowed provider-revocation write, and only then calls the provider. Repeated DELETE requests return the same durable state and never repeat a revocation that may have succeeded. Provider success is recorded before the transaction atomically destroys local credentials and marks cleanup complete. If a response or database write is lost, `GET /api/accounts` rehydrates the pending operation for the authenticated owner; its operation ID expires and rotates on an authenticated resume. Completion is replay-safe, and an uncertain provider result is disclosed rather than treated as confirmed revocation.
 
 ## State model
 
