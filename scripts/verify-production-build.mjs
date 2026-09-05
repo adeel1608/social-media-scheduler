@@ -77,15 +77,27 @@ for (const expectedOrigin of [
   "https://postline-ci.workers.dev",
   "https://postline-ci.supabase.co",
   "https://*.ingest.uploadthing.com",
-  "script-src 'self' https://challenges.cloudflare.com",
-  "frame-src https://challenges.cloudflare.com",
 ]) {
   if (!headers.includes(expectedOrigin)) {
     throw new Error(`Production Pages CSP is missing ${expectedOrigin}`);
   }
 }
-if (headers.includes("https://challenges.cloudflare.com/")) {
-  throw new Error("Production Pages CSP must use the exact Turnstile origin");
+
+const policy = headers.match(/Content-Security-Policy: ([^\r\n]+)/)?.[1];
+if (!policy) throw new Error("Production Pages CSP header is missing");
+const directives = new Map(
+  policy.split(";").map((directive) => {
+    const [name, ...sources] = directive.trim().split(/\s+/);
+    return [name, sources];
+  }),
+);
+if (
+  JSON.stringify(directives.get("script-src")) !==
+    JSON.stringify(["'self'", "https://challenges.cloudflare.com"]) ||
+  JSON.stringify(directives.get("frame-src")) !==
+    JSON.stringify(["https://challenges.cloudflare.com"])
+) {
+  throw new Error("Production Pages CSP has unexpected Turnstile sources");
 }
 
 const indexHtml = await readFile(resolve(distDirectory, "index.html"), "utf8");

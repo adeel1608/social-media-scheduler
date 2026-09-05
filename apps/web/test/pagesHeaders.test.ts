@@ -21,11 +21,14 @@ describe("Cloudflare Pages security headers", () => {
     );
     expect(headers).not.toMatch(/connect-src[^;\n]*\shttps:(?:\s|;)/);
     expect(headers).not.toContain("public-key-not-rendered");
-    expect(headers).toContain(
-      "script-src 'self' https://challenges.cloudflare.com",
-    );
-    expect(headers).toContain("frame-src https://challenges.cloudflare.com");
-    expect(headers).not.toContain("https://challenges.cloudflare.com/");
+    const directives = contentSecurityPolicyDirectives(headers);
+    expect(directives.get("script-src")).toEqual([
+      "'self'",
+      "https://challenges.cloudflare.com",
+    ]);
+    expect(directives.get("frame-src")).toEqual([
+      "https://challenges.cloudflare.com",
+    ]);
     expect(headers).toContain("frame-ancestors 'none'");
   });
 
@@ -45,3 +48,14 @@ describe("Cloudflare Pages security headers", () => {
     expect(headers.match(/https:\/\/services\.example\.dev/g)).toHaveLength(1);
   });
 });
+
+function contentSecurityPolicyDirectives(headers: string) {
+  const policy = headers.match(/Content-Security-Policy: ([^\r\n]+)/)?.[1];
+  if (!policy) throw new Error("Content-Security-Policy header is missing");
+  return new Map(
+    policy.split(";").map((directive) => {
+      const [name, ...sources] = directive.trim().split(/\s+/);
+      return [name, sources] as const;
+    }),
+  );
+}
