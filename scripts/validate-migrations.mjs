@@ -5,13 +5,14 @@ const files = (await readdir(directory))
   .filter((file) => file.endsWith(".sql"))
   .sort();
 if (!files.length) throw new Error("No Supabase migrations found");
-const sql = (
-  await Promise.all(
-    files.map((file) => readFile(`${directory}/${file}`, "utf8")),
-  )
-)
-  .join("\n")
-  .toLowerCase();
+const migrationContents = await Promise.all(
+  files.map((file) => readFile(`${directory}/${file}`, "utf8")),
+);
+const sql = migrationContents.join("\n").toLowerCase();
+const phase2bPreflightFile = "202609050004_phase_2b_preflight.sql";
+const phase2bPreflightSql = files.includes(phase2bPreflightFile)
+  ? migrationContents[files.indexOf(phase2bPreflightFile)].toLowerCase()
+  : "";
 const requiredTables = [
   "installation_settings",
   "connected_accounts",
@@ -84,6 +85,20 @@ const requirements = {
     sql.includes("account_disconnect_owner_select") &&
     sql.includes("provider_request_sent_at") &&
     sql.includes("connected_accounts_clear_disconnect_on_reconnect"),
+  "role-authorized Phase 2B preflight":
+    phase2bPreflightSql.includes(
+      "create or replace function public.verify_phase_2b_schema()",
+    ) &&
+    phase2bPreflightSql.includes("stable") &&
+    phase2bPreflightSql.includes(
+      "revoke all on function public.verify_phase_2b_schema()",
+    ) &&
+    phase2bPreflightSql.includes("from public, anon, authenticated") &&
+    phase2bPreflightSql.includes(
+      "grant execute on function public.verify_phase_2b_schema()",
+    ) &&
+    phase2bPreflightSql.includes("to service_role") &&
+    !phase2bPreflightSql.includes("request.jwt.claim.role"),
 };
 if (missingTables.length || Object.values(requirements).includes(false)) {
   console.error({ missingTables, requirements });
