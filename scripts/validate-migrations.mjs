@@ -33,6 +33,12 @@ const requirements = {
   "atomic claim function":
     sql.includes("function public.claim_due_targets") &&
     sql.includes("for update skip locked"),
+  "stale publishing recovery":
+    sql.includes("function public.claim_stale_targets") &&
+    sql.includes("candidate.status in ('publishing', 'processing')") &&
+    sql.includes(
+      "grant execute on function public.claim_stale_targets(text, integer, integer, integer)",
+    ),
   "row level security": requiredTables.every((table) =>
     sql.includes(`alter table public.${table} enable row level security`),
   ),

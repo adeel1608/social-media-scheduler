@@ -2,17 +2,33 @@ import {
   decryptSecret,
   encryptSecret,
   redactSecrets,
+  SecretDecryptionError,
+  youTubeMetadataSchema,
   type Platform,
+  type PlatformMetadata,
   type PublishResult,
 } from "@scheduler/shared";
 import { trustedUploadSessionUrl } from "@scheduler/platforms";
 
 import { adapterFor } from "./adapters";
-import { SupabaseRest } from "./database";
+import { DatabaseRequestError, SupabaseRest } from "./database";
+import { encryptionKeyResolver } from "./encryption";
 import type { Env, QueueJob } from "./env";
 import { logWorkerError } from "./logging";
 import { sendFailureEmailOnce } from "./notifications";
-import { fetchMediaBody, fetchMediaRange, signedDeliveryUrl } from "./storage";
+import {
+  classifyPublishResult,
+  QueueInfrastructureError,
+  type QueueProcessResult,
+  type QueueProcessingClassification,
+} from "./queue-errors";
+import { recoveryModeForTarget } from "./queue-recovery";
+import {
+  fetchMediaBody,
+  fetchMediaRange,
+  MediaStorageError,
+  signedDeliveryUrl,
+} from "./storage";
 
 interface TargetRecord {
   id: string;
@@ -20,7 +36,7 @@ interface TargetRecord {
   post_id: string;
   platform: Platform;
   status: string;
-  metadata: Record<string, unknown>;
+  metadata: PlatformMetadata;
   selected_media_ids: string[];
   scheduled_at_utc: string;
   idempotency_key: string;
@@ -48,6 +64,37 @@ interface TargetRecord {
       };
     }>;
   };
+}
+
+function queueResult(
+  target: Pick<TargetRecord, "platform" | "status">,
+  classification: QueueProcessingClassification,
+  state = target.status,
+): QueueProcessResult {
+  return { classification, provider: target.platform, state };
+}
+
+function isInfrastructureError(error: unknown): boolean {
+  return (
+    error instanceof DatabaseRequestError ||
+    error instanceof MediaStorageError ||
+    error instanceof QueueInfrastructureError
+  );
+}
+
+async function enqueueQueueJob(
+  env: Env,
+  job: QueueJob,
+  delaySeconds?: number,
+): Promise<void> {
+  try {
+    await env.PUBLISH_QUEUE.send(
+      job,
+      delaySeconds === undefined ? undefined : { delaySeconds },
+    );
+  } catch {
+    throw new QueueInfrastructureError(job);
+  }
 }
 
 export function acceptedUploadByte(
@@ -96,7 +143,7 @@ async function loadAccessToken(
       algorithm: "AES-GCM",
       keyVersion: account.encryption_key_version,
     },
-    env.TOKEN_ENCRYPTION_KEY,
+    encryptionKeyResolver(env),
   );
   const expiresAt = account.token_expires_at
     ? new Date(account.token_expires_at).getTime()
@@ -111,7 +158,7 @@ async function loadAccessToken(
             algorithm: "AES-GCM",
             keyVersion: account.encryption_key_version,
           },
-          env.TOKEN_ENCRYPTION_KEY,
+          encryptionKeyResolver(env),
         )
       : undefined;
   const refreshed = await adapterFor(target.platform, env).refreshAccessToken({
@@ -126,9 +173,13 @@ async function loadAccessToken(
     env.TOKEN_ENCRYPTION_KEY,
     env.TOKEN_ENCRYPTION_KEY_VERSION,
   );
-  const encryptedRefresh = refreshed.refreshToken
+  // Keep the account's single key-version column truthful even when a provider
+  // rotates only the access token: re-encrypt the existing refresh token under
+  // the same current version instead of leaving old ciphertext mislabeled.
+  const refreshValue = refreshed.refreshToken ?? refreshToken;
+  const encryptedRefresh = refreshValue
     ? await encryptSecret(
-        refreshed.refreshToken,
+        refreshValue,
         env.TOKEN_ENCRYPTION_KEY,
         env.TOKEN_ENCRYPTION_KEY_VERSION,
       )
@@ -141,9 +192,18 @@ async function loadAccessToken(
           encrypted_refresh_token: encryptedRefresh.ciphertext,
           refresh_token_nonce: encryptedRefresh.nonce,
         }
-      : {}),
+      : {
+          encrypted_refresh_token: null,
+          refresh_token_nonce: null,
+        }),
     encryption_key_version: encryptedAccess.keyVersion,
     token_expires_at: refreshed.expiresAt,
+    metadata: {
+      ...(account.metadata ?? {}),
+      ...(typeof refreshed.raw.refreshTokenExpiresAt === "string"
+        ? { refreshTokenExpiresAt: refreshed.raw.refreshTokenExpiresAt }
+        : {}),
+    },
     connection_status: "connected",
     updated_at: new Date().toISOString(),
   });
@@ -269,36 +329,70 @@ export async function updateMediaRetentionForPost(
   }
 }
 
-export async function processQueueJob(env: Env, job: QueueJob): Promise<void> {
+export async function processQueueJob(
+  env: Env,
+  job: QueueJob,
+): Promise<QueueProcessResult> {
   const db = new SupabaseRest(env);
   const leaseOwner = `queue:${crypto.randomUUID()}`;
   const now = new Date();
-  const claimed = await db.update<Array<{ id: string }>>(
-    `post_targets?id=eq.${encodeURIComponent(job.targetId)}&status=in.(queued,publishing,processing)&or=(lease_expires_at.is.null,lease_expires_at.lte.${encodeURIComponent(now.toISOString())})`,
-    {
-      lease_owner: leaseOwner,
-      lease_expires_at: new Date(now.getTime() + 10 * 60 * 1_000).toISOString(),
-    },
-  );
-  if (!claimed.length) {
-    const current = await loadTarget(db, job.targetId);
-    if (
-      current &&
-      ["queued", "publishing", "processing"].includes(current.status)
-    )
-      await env.PUBLISH_QUEUE.send(
-        { ...job, requestedAt: new Date().toISOString() },
-        { delaySeconds: 30 },
-      );
-    return;
-  }
+  let target: TargetRecord | null = null;
   try {
-    await processClaimedQueueJob(env, db, job);
-  } finally {
-    await db.update(
-      `post_targets?id=eq.${encodeURIComponent(job.targetId)}&lease_owner=eq.${encodeURIComponent(leaseOwner)}`,
-      { lease_owner: null, lease_expires_at: null },
+    const claimed = await db.update<Array<{ id: string }>>(
+      `post_targets?id=eq.${encodeURIComponent(job.targetId)}&status=in.(queued,publishing,processing)&or=(lease_expires_at.is.null,lease_expires_at.lte.${encodeURIComponent(now.toISOString())})`,
+      {
+        lease_owner: leaseOwner,
+        lease_expires_at: new Date(
+          now.getTime() + 10 * 60 * 1_000,
+        ).toISOString(),
+      },
     );
+    if (!claimed.length) {
+      target = await loadTarget(db, job.targetId);
+      if (
+        target &&
+        ["queued", "publishing", "processing"].includes(target.status)
+      ) {
+        await enqueueQueueJob(
+          env,
+          { ...job, requestedAt: new Date().toISOString() },
+          30,
+        );
+      }
+      return target
+        ? queueResult(target, "duplicate_delivery")
+        : { classification: "duplicate_delivery", state: "not_found" };
+    }
+    target = await loadTarget(db, job.targetId);
+    if (!target) {
+      return { classification: "duplicate_delivery", state: "not_found" };
+    }
+    return await processClaimedQueueJob(env, db, job, target);
+  } catch (error) {
+    if (error instanceof QueueInfrastructureError) {
+      throw new QueueInfrastructureError(
+        job,
+        error.provider ?? target?.platform,
+        error.targetState ?? target?.status,
+      );
+    }
+    throw new QueueInfrastructureError(job, target?.platform, target?.status);
+  } finally {
+    try {
+      await db.update(
+        `post_targets?id=eq.${encodeURIComponent(job.targetId)}&lease_owner=eq.${encodeURIComponent(leaseOwner)}`,
+        { lease_owner: null, lease_expires_at: null },
+      );
+    } catch {
+      if (target) {
+        logWorkerError("queue_lease_release_failed", {
+          targetId: target.id,
+          provider: target.platform,
+          state: target.status,
+          classification: "retryable_infrastructure",
+        });
+      }
+    }
   }
 }
 
@@ -306,13 +400,12 @@ async function processClaimedQueueJob(
   env: Env,
   db: SupabaseRest,
   job: QueueJob,
-): Promise<void> {
-  const target = await loadTarget(db, job.targetId);
+  target: TargetRecord,
+): Promise<QueueProcessResult> {
   if (
-    !target ||
     ["published", "failed", "needs_review", "cancelled"].includes(target.status)
   )
-    return;
+    return queueResult(target, "duplicate_delivery");
   if (env.LIVE_TEST_CONFIRM !== "true") {
     await db.update(`post_targets?id=eq.${target.id}`, {
       status: "blocked_authorization",
@@ -322,13 +415,28 @@ async function processClaimedQueueJob(
       lease_owner: null,
       lease_expires_at: null,
     });
-    return;
+    return queueResult(
+      target,
+      "validation_or_authorization_failure",
+      "blocked_authorization",
+    );
   }
   const adapter = adapterFor(target.platform, env);
   let accessToken: string;
   try {
     accessToken = await loadAccessToken(env, target);
-  } catch {
+  } catch (error) {
+    if (
+      isInfrastructureError(error) ||
+      (error instanceof SecretDecryptionError &&
+        error.code === "key_unavailable")
+    ) {
+      throw error;
+    }
+    const normalized = adapter.normalizeError(error);
+    if (normalized.retryable || normalized.ambiguous) {
+      throw new QueueInfrastructureError(job, target.platform, target.status);
+    }
     await db.update(`post_targets?id=eq.${target.id}`, {
       status: "blocked_authorization",
       last_error_code: "token_refresh_failed",
@@ -337,21 +445,39 @@ async function processClaimedQueueJob(
       lease_owner: null,
       lease_expires_at: null,
     });
-    return;
+    return queueResult(
+      target,
+      "validation_or_authorization_failure",
+      "blocked_authorization",
+    );
   }
-  if (job.mode === "upload")
+  // Database state is authoritative after redelivery. If dispatching the next
+  // mode failed, the Queue retry still contains the previous message body; do
+  // not let that stale mode re-initiate a provider request or skip an upload.
+  const continuationMode = recoveryModeForTarget(target);
+  if (continuationMode === "upload")
     return continueUploadSafely(env, db, target, accessToken);
-  if (job.mode === "poll") return pollStatus(env, db, target, accessToken);
+  if (continuationMode === "poll")
+    return pollStatus(env, db, target, accessToken);
 
   if (target.publish_request_sent_at) {
     // A publish request might already have reached the platform. Never send another one automatically.
     if (target.platform_upload_state?.statusHandle) {
-      await env.PUBLISH_QUEUE.send(
+      await enqueueQueueJob(
+        env,
         { ...job, mode: "poll", requestedAt: new Date().toISOString() },
-        { delaySeconds: 60 },
+        60,
       );
+      return queueResult(target, "safe_continuation", "processing");
     } else {
-      const attempt = await nextAttempt(db, target);
+      const state = target.platform_upload_state;
+      const attempt =
+        typeof state?.attemptId === "string"
+          ? {
+              id: state.attemptId,
+              number: Number(state.attemptNumber ?? 1),
+            }
+          : await nextAttempt(db, target);
       await recordFinal(env, db, target, attempt, {
         outcome: "ambiguous",
         sanitizedResponse: {
@@ -364,121 +490,78 @@ async function processClaimedQueueJob(
           retryable: false,
         },
       });
+      return queueResult(
+        target,
+        "ambiguous_provider_acceptance",
+        "needs_review",
+      );
     }
-    return;
   }
 
   const attempt = await nextAttempt(db, target);
-  try {
-    const selected = new Set(target.selected_media_ids);
-    const mediaRows = [...target.posts.post_media]
-      .filter(({ media_assets: item }) => selected.has(item.id))
-      .sort((a, b) => a.sort_order - b.sort_order);
-    const media = mediaRows.map(({ media_assets: item }) => ({
-      id: item.id,
-      objectKey: item.object_key,
-      storageProvider: item.storage_provider,
-      providerFileKey: item.provider_file_key,
-      providerUrl: item.provider_url,
-      mimeType: item.mime_type,
-      sizeBytes: item.size_bytes,
-      ...(item.width ? { width: item.width } : {}),
-      ...(item.height ? { height: item.height } : {}),
-      ...(item.duration_seconds
-        ? { durationSeconds: item.duration_seconds }
-        : {}),
-    }));
-    const validation = adapter.validatePost(target.metadata as any, media);
-    if (!validation.valid) {
-      await recordFinal(env, db, target, attempt, {
-        outcome: "failed",
-        sanitizedResponse: { validation: validation.errors },
-        error: {
-          code: "validation_failed",
-          message: validation.errors.map((issue) => issue.message).join(" "),
-          retryable: false,
-        },
-      });
-      return;
-    }
-    const deliveryUrls = await Promise.all(
-      media.map((item) =>
-        signedDeliveryUrl(env, {
-          mediaId: item.id,
-          ownerId: target.owner_id,
-        }),
-      ),
-    );
-    await db.update(`post_targets?id=eq.${target.id}`, {
-      status: "publishing",
-      publish_request_sent_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+  const selected = new Set(target.selected_media_ids);
+  const mediaRows = [...target.posts.post_media]
+    .filter(({ media_assets: item }) => selected.has(item.id))
+    .sort((a, b) => a.sort_order - b.sort_order);
+  const media = mediaRows.map(({ media_assets: item }) => ({
+    id: item.id,
+    objectKey: item.object_key,
+    storageProvider: item.storage_provider,
+    providerFileKey: item.provider_file_key,
+    providerUrl: item.provider_url,
+    mimeType: item.mime_type,
+    sizeBytes: item.size_bytes,
+    ...(item.width ? { width: item.width } : {}),
+    ...(item.height ? { height: item.height } : {}),
+    ...(item.duration_seconds
+      ? { durationSeconds: item.duration_seconds }
+      : {}),
+  }));
+  const validation = adapter.validatePost(target.metadata, media);
+  if (!validation.valid) {
+    await recordFinal(env, db, target, attempt, {
+      outcome: "failed",
+      sanitizedResponse: { validation: validation.errors },
+      error: {
+        code: "validation_failed",
+        message: validation.errors.map((issue) => issue.message).join(" "),
+        retryable: false,
+      },
     });
-    const result = await adapter.publish({
+    return queueResult(target, "validation_or_authorization_failure", "failed");
+  }
+  const deliveryUrls = await Promise.all(
+    media.map((item) =>
+      signedDeliveryUrl(env, {
+        mediaId: item.id,
+        ownerId: target.owner_id,
+      }),
+    ),
+  );
+  const requestSentAt = new Date().toISOString();
+  await db.update(`post_targets?id=eq.${target.id}`, {
+    status: "publishing",
+    publish_request_sent_at: requestSentAt,
+    platform_upload_state: {
+      phase: "request_sent",
+      attemptId: attempt.id,
+      attemptNumber: attempt.number,
+    },
+    updated_at: requestSentAt,
+  });
+  let result: PublishResult;
+  try {
+    result = await adapter.publish({
       accountId: target.connected_accounts.remote_account_id,
       accessToken,
       idempotencyKey: target.idempotency_key,
-      metadata: target.metadata as any,
+      metadata: target.metadata,
       media,
       deliveryUrls,
     });
-    await db.update(`publish_attempts?id=eq.${attempt.id}`, {
-      request_sent_at: new Date().toISOString(),
-      sanitized_response: redactSecrets(result.sanitizedResponse),
-    });
-    if (result.uploadSession) {
-      const encrypted = await encryptSecret(
-        result.uploadSession.url,
-        env.TOKEN_ENCRYPTION_KEY,
-        env.TOKEN_ENCRYPTION_KEY_VERSION,
-      );
-      await db.update(`post_targets?id=eq.${target.id}`, {
-        status: "processing",
-        platform_upload_state: {
-          encryptedUrl: encrypted.ciphertext,
-          nonce: encrypted.nonce,
-          keyVersion: encrypted.keyVersion,
-          nextByte: result.uploadSession.nextByte,
-          totalBytes: result.uploadSession.totalBytes,
-          chunkSize: result.uploadSession.chunkSize,
-          statusHandle: result.statusHandle,
-          attemptId: attempt.id,
-          attemptNumber: attempt.number,
-        },
-      });
-      await env.PUBLISH_QUEUE.send(
-        {
-          targetId: target.id,
-          mode: "upload",
-          requestedAt: new Date().toISOString(),
-        },
-        { delaySeconds: 1 },
-      );
-      return;
-    }
-    if (result.outcome === "processing") {
-      await db.update(`post_targets?id=eq.${target.id}`, {
-        status: "processing",
-        platform_upload_state: {
-          statusHandle: result.statusHandle,
-          attemptId: attempt.id,
-          attemptNumber: attempt.number,
-        },
-      });
-      await env.PUBLISH_QUEUE.send(
-        {
-          targetId: target.id,
-          mode: "poll",
-          requestedAt: new Date().toISOString(),
-        },
-        { delaySeconds: 60 },
-      );
-      return;
-    }
-    await recordFinal(env, db, target, attempt, result);
   } catch (error) {
     const normalized = adapter.normalizeError(error);
-    await recordFinal(env, db, target, attempt, {
+    result = {
       outcome: normalized.ambiguous ? "ambiguous" : "failed",
       sanitizedResponse: {
         code: normalized.code,
@@ -489,8 +572,69 @@ async function processClaimedQueueJob(
         message: normalized.message,
         retryable: false,
       },
-    });
+    };
   }
+  await db.update(`publish_attempts?id=eq.${attempt.id}`, {
+    request_sent_at: requestSentAt,
+    sanitized_response: redactSecrets(result.sanitizedResponse),
+  });
+  if (result.uploadSession) {
+    const encrypted = await encryptSecret(
+      result.uploadSession.url,
+      env.TOKEN_ENCRYPTION_KEY,
+      env.TOKEN_ENCRYPTION_KEY_VERSION,
+    );
+    await db.update(`post_targets?id=eq.${target.id}`, {
+      status: "processing",
+      platform_upload_state: {
+        encryptedUrl: encrypted.ciphertext,
+        nonce: encrypted.nonce,
+        keyVersion: encrypted.keyVersion,
+        nextByte: result.uploadSession.nextByte,
+        totalBytes: result.uploadSession.totalBytes,
+        chunkSize: result.uploadSession.chunkSize,
+        statusHandle: result.statusHandle,
+        attemptId: attempt.id,
+        attemptNumber: attempt.number,
+      },
+    });
+    await enqueueQueueJob(
+      env,
+      {
+        targetId: target.id,
+        mode: "upload",
+        requestedAt: new Date().toISOString(),
+      },
+      1,
+    );
+    return queueResult(target, "safe_continuation", "processing");
+  }
+  if (result.outcome === "processing") {
+    await db.update(`post_targets?id=eq.${target.id}`, {
+      status: "processing",
+      platform_upload_state: {
+        statusHandle: result.statusHandle,
+        attemptId: attempt.id,
+        attemptNumber: attempt.number,
+      },
+    });
+    await enqueueQueueJob(
+      env,
+      {
+        targetId: target.id,
+        mode: "poll",
+        requestedAt: new Date().toISOString(),
+      },
+      60,
+    );
+    return queueResult(target, "safe_continuation", "processing");
+  }
+  await recordFinal(env, db, target, attempt, result);
+  return queueResult(
+    target,
+    classifyPublishResult(result),
+    result.outcome === "ambiguous" ? "needs_review" : result.outcome,
+  );
 }
 
 async function continueUploadSafely(
@@ -498,10 +642,12 @@ async function continueUploadSafely(
   db: SupabaseRest,
   target: TargetRecord,
   accessToken: string,
-) {
+): Promise<QueueProcessResult> {
   try {
     await continueUpload(env, db, target, accessToken);
+    return queueResult(target, "safe_continuation", "processing");
   } catch (error) {
+    if (isInfrastructureError(error)) throw error;
     const state = target.platform_upload_state;
     if (!state?.attemptId) throw error;
     const normalized = adapterFor(target.platform, env).normalizeError(error);
@@ -520,15 +666,16 @@ async function continueUploadSafely(
       await db.update(`post_targets?id=eq.${target.id}`, {
         platform_upload_state: { ...state, uploadRetryCount },
       });
-      await env.PUBLISH_QUEUE.send(
+      await enqueueQueueJob(
+        env,
         {
           targetId: target.id,
           mode: "upload",
           requestedAt: new Date().toISOString(),
         },
-        { delaySeconds: Math.min(30 * 2 ** uploadRetryCount, 900) },
+        Math.min(30 * 2 ** uploadRetryCount, 900),
       );
-      return;
+      return queueResult(target, "safe_continuation", "processing");
     }
     if (normalized.ambiguous && state.statusHandle) {
       // The last chunk may have completed. Reconcile the existing provider job; never re-initiate it.
@@ -536,15 +683,16 @@ async function continueUploadSafely(
         status: "processing",
         platform_upload_state: { ...state, uploadComplete: "uncertain" },
       });
-      await env.PUBLISH_QUEUE.send(
+      await enqueueQueueJob(
+        env,
         {
           targetId: target.id,
           mode: "poll",
           requestedAt: new Date().toISOString(),
         },
-        { delaySeconds: 120 },
+        120,
       );
-      return;
+      return queueResult(target, "ambiguous_provider_acceptance", "processing");
     }
     await recordFinal(
       env,
@@ -567,6 +715,13 @@ async function continueUploadSafely(
           retryable: false,
         },
       },
+    );
+    return queueResult(
+      target,
+      normalized.ambiguous
+        ? "ambiguous_provider_acceptance"
+        : "definite_provider_rejection",
+      normalized.ambiguous ? "needs_review" : "failed",
     );
   }
 }
@@ -601,7 +756,7 @@ async function continueUpload(
       algorithm: "AES-GCM",
       keyVersion: state.keyVersion,
     },
-    env.TOKEN_ENCRYPTION_KEY,
+    encryptionKeyResolver(env),
   );
   const trustedUrl = trustedUploadSessionUrl(target.platform, url);
   const start = Number(state.nextByte);
@@ -618,11 +773,14 @@ async function continueUpload(
     start,
     endExclusive,
   );
+  const uploadController = new AbortController();
+  const uploadTimeout = setTimeout(() => uploadController.abort(), 120_000);
   let response: Response;
   try {
     response = await fetch(trustedUrl, {
       method: "PUT",
       redirect: "manual",
+      signal: uploadController.signal,
       headers: {
         ...(target.platform === "youtube"
           ? { Authorization: `Bearer ${accessToken}` }
@@ -640,6 +798,8 @@ async function continueUpload(
       message: "Resumable upload request failed",
       ambiguous: true,
     };
+  } finally {
+    clearTimeout(uploadTimeout);
   }
   const accepted =
     response.ok || (target.platform === "youtube" && response.status === 308);
@@ -659,13 +819,14 @@ async function continueUpload(
     await db.update(`post_targets?id=eq.${target.id}`, {
       platform_upload_state: { ...state, nextByte, uploadRetryCount: 0 },
     });
-    await env.PUBLISH_QUEUE.send(
+    await enqueueQueueJob(
+      env,
       {
         targetId: target.id,
         mode: "upload",
         requestedAt: new Date().toISOString(),
       },
-      { delaySeconds: 1 },
+      1,
     );
     return;
   }
@@ -685,13 +846,14 @@ async function continueUpload(
       uploadComplete: true,
     },
   });
-  await env.PUBLISH_QUEUE.send(
+  await enqueueQueueJob(
+    env,
     {
       targetId: target.id,
       mode: "poll",
       requestedAt: new Date().toISOString(),
     },
-    { delaySeconds: 60 },
+    60,
   );
 }
 
@@ -700,7 +862,7 @@ async function pollStatus(
   db: SupabaseRest,
   target: TargetRecord,
   accessToken: string,
-) {
+): Promise<QueueProcessResult> {
   const state = target.platform_upload_state;
   if (!state?.attemptId) throw new Error("Publish attempt state is missing");
   const statusHandle = state?.statusHandle as string | undefined;
@@ -719,69 +881,28 @@ async function pollStatus(
         retryable: false,
       },
     });
-    return;
+    return queueResult(target, "ambiguous_provider_acceptance", "needs_review");
   }
+  let result: PublishResult;
   try {
-    const result = await adapterFor(target.platform, env).getPublishStatus(
+    result = await adapterFor(target.platform, env).getPublishStatus(
       accessToken,
       statusHandle,
-    );
-    if (result.outcome === "processing") {
-      if (result.statusHandle && result.statusHandle !== statusHandle) {
-        await db.update(`post_targets?id=eq.${target.id}`, {
-          platform_upload_state: {
-            ...state,
-            statusHandle: result.statusHandle,
-          },
-        });
-      }
-      await env.PUBLISH_QUEUE.send(
-        {
-          targetId: target.id,
-          mode: "poll",
-          requestedAt: new Date().toISOString(),
-        },
-        { delaySeconds: 60 },
-      );
-      return;
-    }
-    if (result.outcome === "published" && result.remoteContentId) {
-      const thumbnailResult = await uploadYouTubeThumbnailIfSelected(
-        env,
-        target,
-        accessToken,
-        result.remoteContentId,
-      );
-      if (thumbnailResult) {
-        result.sanitizedResponse = {
-          ...result.sanitizedResponse,
-          thumbnail: thumbnailResult,
-        };
-      }
-    }
-    await recordFinal(
-      env,
-      db,
-      target,
-      {
-        id: state.attemptId as string,
-        number: Number(state.attemptNumber ?? 1),
-      },
-      result,
     );
   } catch (error) {
     const normalized = adapterFor(target.platform, env).normalizeError(error);
     if (normalized.retryable && !normalized.ambiguous) {
       // Polling can safely continue; this never creates another publish request.
-      await env.PUBLISH_QUEUE.send(
+      await enqueueQueueJob(
+        env,
         {
           targetId: target.id,
           mode: "poll",
           requestedAt: new Date().toISOString(),
         },
-        { delaySeconds: 120 },
+        120,
       );
-      return;
+      return queueResult(target, "safe_continuation", "processing");
     }
     await recordFinal(
       env,
@@ -804,7 +925,59 @@ async function pollStatus(
         },
       },
     );
+    return queueResult(
+      target,
+      normalized.ambiguous
+        ? "ambiguous_provider_acceptance"
+        : "definite_provider_rejection",
+      normalized.ambiguous ? "needs_review" : "failed",
+    );
   }
+  if (result.outcome === "processing") {
+    if (result.statusHandle && result.statusHandle !== statusHandle) {
+      await db.update(`post_targets?id=eq.${target.id}`, {
+        platform_upload_state: {
+          ...state,
+          statusHandle: result.statusHandle,
+        },
+      });
+    }
+    await enqueueQueueJob(
+      env,
+      {
+        targetId: target.id,
+        mode: "poll",
+        requestedAt: new Date().toISOString(),
+      },
+      60,
+    );
+    return queueResult(target, "safe_continuation", "processing");
+  }
+  if (result.outcome === "published" && result.remoteContentId) {
+    const thumbnailResult = await uploadYouTubeThumbnailIfSelected(
+      env,
+      target,
+      accessToken,
+      result.remoteContentId,
+    );
+    if (thumbnailResult) {
+      result.sanitizedResponse = {
+        ...result.sanitizedResponse,
+        thumbnail: thumbnailResult,
+      };
+    }
+  }
+  await recordFinal(
+    env,
+    db,
+    target,
+    {
+      id: state.attemptId as string,
+      number: Number(state.attemptNumber ?? 1),
+    },
+    result,
+  );
+  return queueResult(target, classifyPublishResult(result), result.outcome);
 }
 
 async function uploadYouTubeThumbnailIfSelected(
@@ -814,7 +987,9 @@ async function uploadYouTubeThumbnailIfSelected(
   videoId: string,
 ): Promise<"uploaded" | "not_permitted" | null> {
   if (target.platform !== "youtube") return null;
-  const thumbnailId = target.metadata.thumbnailMediaId;
+  const metadata = youTubeMetadataSchema.safeParse(target.metadata);
+  if (!metadata.success) return "not_permitted";
+  const thumbnailId = metadata.data.thumbnailMediaId;
   if (typeof thumbnailId !== "string") return null;
   const thumbnail = target.posts.post_media
     .map((item) => item.media_assets)

@@ -39,19 +39,30 @@ export async function jsonRequest<T>(
   fetcher: Fetch,
   url: string,
   init: RequestInit = {},
+  timeoutMs = 15_000,
 ): Promise<T> {
+  const controller = new AbortController();
+  const upstreamSignal = init.signal;
+  const forwardAbort = () => controller.abort(upstreamSignal?.reason);
+  if (upstreamSignal?.aborted) forwardAbort();
+  else upstreamSignal?.addEventListener("abort", forwardAbort, { once: true });
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
+  let text: string;
   try {
-    response = await fetcher(url, init);
+    response = await fetcher(url, { ...init, signal: controller.signal });
+    text = await response.text();
   } catch {
     throw {
       name: "NetworkError",
       code: "network_error",
       message: "Network request failed",
-      ambiguous: init.method !== "GET",
+      ambiguous: (init.method ?? "GET").toUpperCase() !== "GET",
     };
+  } finally {
+    clearTimeout(timeout);
+    upstreamSignal?.removeEventListener("abort", forwardAbort);
   }
-  const text = await response.text();
   let body: unknown = {};
   if (text) {
     try {

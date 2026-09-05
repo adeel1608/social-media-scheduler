@@ -96,8 +96,18 @@ Deploy the reviewed version only when every real required secret is present and
 the operator has intentionally approved the release. A normal `wrangler deploy`
 also creates and immediately deploys a new version. Wrangler applies the UTC
 cron and queue bindings in `wrangler.toml`; verify the cron and that the consumer
-has `max_retries = 0`. Platform failures are durable application results and
-must not automatically create a duplicate publish attempt.
+has `max_retries = 5` plus the configured dead-letter queue. Durable platform
+outcomes are acknowledged. Only safely retryable infrastructure failures use
+Queue redelivery; a recorded or ambiguous provider request must not create a
+duplicate publish attempt.
+
+For encryption-key rotation, keep the current key in
+`TOKEN_ENCRYPTION_KEY` and add each still-needed historical version as a Worker
+secret named `TOKEN_ENCRYPTION_KEY_<VERSION>`, for example
+`TOKEN_ENCRYPTION_KEY_V1`. Version identifiers must match
+`^[a-z][a-z0-9]{0,31}$`. Upload the binding in an inactive version, confirm the
+binding name without reading its value, and deploy it before any ciphertext is
+rewritten to a newer version.
 
 ## Web application
 

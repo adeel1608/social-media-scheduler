@@ -38,6 +38,10 @@ describe("Supabase migrations", () => {
     expect(sql).toContain("for update skip locked");
     expect(sql).toContain("lease_expires_at");
     expect(sql).toContain("grant execute on function public.claim_due_targets");
+    expect(sql).toContain("function public.claim_stale_targets");
+    expect(sql).toContain(
+      "grant execute on function public.claim_stale_targets",
+    );
   });
 
   it("enforces independent target uniqueness and email deduplication", () => {

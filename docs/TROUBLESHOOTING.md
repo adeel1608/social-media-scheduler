@@ -62,7 +62,17 @@ into logs, shell history, chat, screenshots, commits, or issues.
 
 ## Cron or queue does not run
 
-Cloudflare Cron is UTC. Confirm `* * * * *` under Worker → Settings → Triggers and the correct queue bindings. Inspect sanitized Worker logs. The consumer is configured with zero automatic retries, so application failures appear in Postline instead of redelivery loops.
+Cloudflare Cron is UTC. Confirm `* * * * *` under Worker → Settings → Triggers and the correct queue bindings. Inspect sanitized Worker logs.
+
+Durable application outcomes are acknowledged; safely retryable infrastructure
+failures receive five bounded redeliveries and then reach
+`social-scheduler-dead-letter`. If a target remains in `publishing` or
+`processing`, confirm the additive `202609050001_queue_recovery.sql` migration
+is applied before deploying code that calls `claim_stale_targets`. Cron uses
+that service-role-only RPC to lease and redispatch stale work. Existing upload
+sessions and provider status handles are continued. A recorded provider request
+without a safe status handle becomes `needs_review` rather than being published
+again.
 
 ## Database migration failure
 

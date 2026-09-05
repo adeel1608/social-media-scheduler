@@ -1523,6 +1523,54 @@ button:disabled {
   display: flex;
   flex-direction: column;
 }
+.account-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+.connected-account-list {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.connected-account {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 15px;
+}
+.connected-account:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.connected-account .account-status-list {
+  margin-bottom: 12px;
+}
+.account-error {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+}
+.account-error > span {
+  flex: 1;
+}
+.account-error button {
+  margin-left: auto;
+}
+.danger-button.compact {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  margin: 0;
+  min-height: 34px;
+  padding: 0 10px;
+}
+.spin {
+  animation: account-spin 1s linear infinite;
+}
+@keyframes account-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .account-card-top {
   display: flex;
   align-items: center;

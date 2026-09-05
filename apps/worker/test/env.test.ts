@@ -174,6 +174,19 @@ describe("fail-closed production configuration", () => {
     );
   });
 
+  it("requires a canonical encryption-key version for unambiguous bindings", () => {
+    for (const version of ["V1", "v1-old", "v1_old", "1", "v".repeat(33)]) {
+      const status = configurationStatus({
+        TOKEN_ENCRYPTION_KEY_VERSION: version,
+      } as Env);
+      expect(status.invalid).toContain("TOKEN_ENCRYPTION_KEY_VERSION");
+    }
+    expect(
+      configurationStatus({ TOKEN_ENCRYPTION_KEY_VERSION: "v12" } as Env)
+        .invalid,
+    ).not.toContain("TOKEN_ENCRYPTION_KEY_VERSION");
+  });
+
   it("rejects production placeholders and a mixed-case owner identity", () => {
     const status = configurationStatus({
       ENVIRONMENT: "production",

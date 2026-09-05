@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { genericNormalizeError, trustedUploadSessionUrl } from "../src/http";
+import {
+  genericNormalizeError,
+  jsonRequest,
+  trustedUploadSessionUrl,
+} from "../src/http";
 
 describe("platform error sanitization", () => {
   it("redacts credentials and URLs before errors are persisted or emailed", () => {
@@ -62,5 +66,32 @@ describe("platform error sanitization", () => {
     ] as const) {
       expect(() => trustedUploadSessionUrl(platform, url)).toThrow();
     }
+  });
+
+  it("bounds outbound provider requests and returns a sanitized timeout error", async () => {
+    const fetcher = vi.fn<typeof fetch>(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("test URL and secret", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+
+    await expect(
+      jsonRequest(
+        fetcher,
+        "https://provider.example/token?code=sensitive",
+        {},
+        5,
+      ),
+    ).rejects.toEqual({
+      name: "NetworkError",
+      code: "network_error",
+      message: "Network request failed",
+      ambiguous: false,
+    });
   });
 });

@@ -10,6 +10,12 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 
 import { syncAnalyticsBatch } from "./analytics";
+import { sanitizeConnectedAccount } from "./accounts";
+import {
+  revokeBeforeLocalDisconnect,
+  revokeAccountsForInstallationDeletion,
+  type RevocableAccount,
+} from "./account-revocation";
 import { adapterFor } from "./adapters";
 import type { Variables } from "./auth";
 import { ownerAuth } from "./auth";
@@ -22,7 +28,9 @@ import {
 import { ownerDatabase, SupabaseRest } from "./database";
 import oauthRoutes from "./oauth-routes";
 import { logWorkerError } from "./logging";
-import { processQueueJob, updateMediaRetentionForPost } from "./publisher";
+import { updateMediaRetentionForPost } from "./publisher";
+import { handleQueueMessage } from "./queue-handler";
+import { recoverStaleQueueTargets } from "./queue-recovery";
 import {
   ACTIVE_MEDIA_LIMIT_BYTES,
   deleteUploadThingFile,
@@ -75,6 +83,11 @@ app.use(
     maxAge: 600,
   }),
 );
+
+app.use("/api/*", async (c, next) => {
+  await next();
+  c.header("Cache-Control", "private, no-store");
+});
 
 app.onError((_error, c) => {
   const requestId = c.req.header("CF-Ray");
@@ -169,41 +182,33 @@ app.get("/api/storage", async (c) => {
 
 app.get("/api/accounts", async (c) => {
   const db = ownerDatabase(c.env, c.get("jwt"));
-  const rows = await db.select(
-    `connected_accounts?owner_id=eq.${c.get("user").id}&select=id,platform,username,scopes,token_expires_at,connection_status,approval_state,metadata&order=platform`,
+  const rows = await db.select<Array<Record<string, unknown>>>(
+    `connected_accounts?owner_id=eq.${c.get("user").id}&select=id,platform,username,connection_status,approval_state,metadata&order=platform`,
   );
-  return c.json({ data: rows });
+  return c.json({
+    data: rows.map(sanitizeConnectedAccount).filter((row) => row !== null),
+  });
 });
 
 app.delete("/api/accounts/:id", async (c) => {
   const db = ownerDatabase(c.env, c.get("jwt"));
-  const rows = await db.select<Array<Record<string, any>>>(
-    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&select=*&limit=1`,
+  const rows = await db.select<RevocableAccount[]>(
+    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&select=platform,encrypted_access_token,access_token_nonce,encryption_key_version&limit=1`,
   );
   const account = rows[0];
   if (!account) return c.json({ error: "account_not_found" }, 404);
-  const { decryptSecret } = await import("@scheduler/shared");
-  const { adapterFor } = await import("./adapters");
-  const accessToken = await decryptSecret(
-    {
-      ciphertext: account.encrypted_access_token,
-      nonce: account.access_token_nonce,
-      algorithm: "AES-GCM",
-      keyVersion: account.encryption_key_version,
-    },
-    c.env.TOKEN_ENCRYPTION_KEY,
-  );
-  await adapterFor(account.platform, c.env).disconnect(accessToken);
-  await db.update(
-    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}`,
-    {
-      connection_status: "disconnected",
-      encrypted_access_token: "revoked",
-      access_token_nonce: "revoked",
-      encrypted_refresh_token: null,
-      refresh_token_nonce: null,
-      updated_at: new Date().toISOString(),
-    },
+  await revokeBeforeLocalDisconnect(c.env, account, () =>
+    db.update(
+      `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}`,
+      {
+        connection_status: "disconnected",
+        encrypted_access_token: "revoked",
+        access_token_nonce: "revoked",
+        encrypted_refresh_token: null,
+        refresh_token_nonce: null,
+        updated_at: new Date().toISOString(),
+      },
+    ),
   );
   return c.json({ ok: true });
 });
@@ -345,26 +350,11 @@ app.post("/api/installation/delete", async (c) => {
       409,
     );
   const serviceDb = new SupabaseRest(c.env);
-  const accounts = await serviceDb.select<Array<Record<string, any>>>(
-    `connected_accounts?owner_id=eq.${ownerId}&select=*`,
+  const accounts = await serviceDb.select<RevocableAccount[]>(
+    `connected_accounts?owner_id=eq.${ownerId}&select=platform,encrypted_access_token,access_token_nonce,encryption_key_version`,
   );
-  for (const account of accounts) {
-    try {
-      const { decryptSecret } = await import("@scheduler/shared");
-      const token = await decryptSecret(
-        {
-          ciphertext: account.encrypted_access_token,
-          nonce: account.access_token_nonce,
-          algorithm: "AES-GCM",
-          keyVersion: account.encryption_key_version,
-        },
-        c.env.TOKEN_ENCRYPTION_KEY,
-      );
-      await adapterFor(account.platform, c.env).disconnect(token);
-    } catch {
-      // Continue local erasure when a provider token is already invalid or unreachable.
-    }
-  }
+  const providerRevocationIncomplete =
+    await revokeAccountsForInstallationDeletion(c.env, accounts);
   const media = await serviceDb.select<
     Array<{
       id: string;
@@ -428,7 +418,11 @@ app.post("/api/installation/delete", async (c) => {
       },
     },
   );
-  return c.json({ ok: true, authUserDeleted: authResponse.ok });
+  return c.json({
+    ok: true,
+    authUserDeleted: authResponse.ok,
+    providerRevocationIncomplete,
+  });
 });
 
 app.post("/api/posts", async (c) => {
@@ -694,6 +688,7 @@ const worker = {
     assertProductionConfigured(env);
     const db = new SupabaseRest(env);
     await syncConfiguredApprovalStates(env, db);
+    await recoverStaleQueueTargets(env, db);
     const workerId = crypto.randomUUID();
     const claimed = await db.rpc<Array<{ id: string }>>("claim_due_targets", {
       p_worker_id: workerId,
@@ -734,16 +729,7 @@ const worker = {
   async queue(batch: MessageBatch<QueueJob>, env: Env) {
     assertProductionConfigured(env);
     for (const message of batch.messages) {
-      try {
-        await processQueueJob(env, message.body);
-      } catch {
-        logWorkerError("queue_job_failed", {
-          targetId: message.body.targetId,
-        });
-      } finally {
-        // API failures are recorded. Infrastructure delivery is acknowledged and never automatically retried.
-        message.ack();
-      }
+      await handleQueueMessage(env, message);
     }
   },
 };

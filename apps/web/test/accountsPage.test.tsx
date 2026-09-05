@@ -1,0 +1,190 @@
+// @vitest-environment jsdom
+
+import type { Session } from "@supabase/supabase-js";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  AccountsPage,
+  type ConnectedAccountSummary,
+} from "../src/pages/AccountsPage";
+
+const mocks = vi.hoisted(() => ({
+  auth: {
+    demoMode: false,
+    loading: false,
+    session: null as Session | null,
+  },
+  apiRequest: vi.fn(),
+}));
+
+vi.mock("../src/context/AuthContext", () => ({
+  useAuth: () => mocks.auth,
+}));
+
+vi.mock("../src/lib/api", () => ({
+  apiRequest: (...arguments_: unknown[]) => mocks.apiRequest(...arguments_),
+}));
+
+const session = {
+  access_token: "browser-test-session",
+} as Session;
+
+function account(
+  platform: ConnectedAccountSummary["platform"],
+  overrides: Partial<ConnectedAccountSummary> = {},
+): ConnectedAccountSummary {
+  return {
+    id: `${platform}-account`,
+    platform,
+    username: `${platform}-owner`,
+    connection_status: "connected",
+    approval_state: "pending",
+    requires_reconnect: false,
+    metadata: {},
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  mocks.auth.demoMode = false;
+  mocks.auth.session = session;
+  mocks.apiRequest.mockReset();
+  window.history.replaceState({}, "", "/accounts");
+});
+
+afterEach(cleanup);
+
+describe("authoritative Connected Accounts UI", () => {
+  it("renders an honest loading state", () => {
+    mocks.apiRequest.mockReturnValue(new Promise(() => undefined));
+    render(<AccountsPage />);
+
+    expect(
+      screen.getByText(/checking authoritative account state/i),
+    ).toBeTruthy();
+    expect(screen.getAllByText(/checking account/i)).toHaveLength(3);
+  });
+
+  it("reports an authentication failure without requesting account data", async () => {
+    mocks.auth.session = null;
+    render(<AccountsPage />);
+
+    expect(
+      await screen.findByText(/authenticated session is required/i),
+    ).toBeTruthy();
+    expect(mocks.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("reports an API failure without claiming that providers are disconnected", async () => {
+    mocks.apiRequest.mockRejectedValue(new Error("Account API unavailable"));
+    render(<AccountsPage />);
+
+    expect(await screen.findByText("Account API unavailable")).toBeTruthy();
+    expect(screen.getAllByText("State unavailable")).toHaveLength(3);
+    expect(screen.queryByText("No server account found")).toBeNull();
+  });
+
+  it("renders an empty response as three independently disconnected providers", async () => {
+    mocks.apiRequest.mockResolvedValue({ data: [] });
+    render(<AccountsPage />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("No server account found")).toHaveLength(3),
+    );
+    expect(screen.getByRole("button", { name: "Connect TikTok" })).toBeTruthy();
+  });
+
+  it("renders TikTok connected only when the server reports it", async () => {
+    mocks.apiRequest.mockResolvedValue({
+      data: [account("tiktok", { metadata: { displayName: "TikTok Owner" } })],
+    });
+    render(<AccountsPage />);
+
+    expect(await screen.findByText("TikTok Owner")).toBeTruthy();
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.queryByText("Token not stored")).toBeNull();
+  });
+
+  it("keeps TikTok absent when only another provider is returned", async () => {
+    mocks.apiRequest.mockResolvedValue({ data: [account("instagram")] });
+    render(<AccountsPage />);
+
+    await screen.findByText("@instagram-owner");
+    expect(screen.getByRole("button", { name: "Connect TikTok" })).toBeTruthy();
+  });
+
+  it("renders multiple providers and independent approval states", async () => {
+    mocks.apiRequest.mockResolvedValue({
+      data: [
+        account("instagram", { approval_state: "approved" }),
+        account("tiktok"),
+        account("youtube", {
+          connection_status: "expired",
+          requires_reconnect: true,
+        }),
+      ],
+    });
+    render(<AccountsPage />);
+
+    await screen.findByText("@instagram-owner");
+    expect(screen.getByText("@tiktok-owner")).toBeTruthy();
+    expect(screen.getByText("@youtube-owner")).toBeTruthy();
+    expect(screen.getByText("Approval recorded by the server")).toBeTruthy();
+    expect(screen.getByText("Expired - reconnect required")).toBeTruthy();
+  });
+
+  it("treats the callback query as notification, refetches, and removes it", async () => {
+    window.history.replaceState({}, "", "/accounts?connected=tiktok");
+    mocks.apiRequest.mockResolvedValue({ data: [account("tiktok")] });
+    render(<AccountsPage />);
+
+    expect(
+      await screen.findByText("TikTok connection confirmed by the server."),
+    ).toBeTruthy();
+    expect(mocks.apiRequest).toHaveBeenCalledWith("/api/accounts", session);
+    expect(window.location.search).toBe("");
+  });
+
+  it("does not let a callback query manufacture a connected account", async () => {
+    window.history.replaceState({}, "", "/accounts?connected=tiktok");
+    mocks.apiRequest.mockResolvedValue({ data: [] });
+    render(<AccountsPage />);
+
+    expect(
+      await screen.findByText(/server does not report a connected account/i),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connect TikTok" })).toBeTruthy();
+  });
+
+  it("refetches on a hard remount and preserves only server state", async () => {
+    mocks.apiRequest.mockResolvedValue({ data: [account("tiktok")] });
+    const first = render(<AccountsPage />);
+    await screen.findByText("@tiktok-owner");
+    first.unmount();
+
+    render(<AccountsPage />);
+    await screen.findByText("@tiktok-owner");
+    expect(mocks.apiRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("never renders credential or encrypted-token material", async () => {
+    mocks.apiRequest.mockResolvedValue({
+      data: [
+        {
+          ...account("tiktok"),
+          encrypted_access_token: "ciphertext-browser-sentinel",
+          encrypted_refresh_token: "refresh-browser-sentinel",
+          access_token_nonce: "nonce-browser-sentinel",
+        },
+      ],
+    });
+    const { container } = render(<AccountsPage />);
+    await screen.findByText("@tiktok-owner");
+
+    const output = container.textContent ?? "";
+    expect(output).not.toContain("ciphertext-browser-sentinel");
+    expect(output).not.toContain("refresh-browser-sentinel");
+    expect(output).not.toContain("nonce-browser-sentinel");
+  });
+});

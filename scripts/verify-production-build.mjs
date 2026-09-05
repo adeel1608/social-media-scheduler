@@ -44,6 +44,12 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 
 const distDirectory = resolve("apps/web/dist");
 const bundleFiles = await listFiles(distDirectory);
+const sourceMaps = bundleFiles.filter((file) => file.endsWith(".map"));
+if (sourceMaps.length > 0) {
+  throw new Error(
+    `Production web build emitted ${sourceMaps.length} downloadable source map(s)`,
+  );
+}
 for (const file of bundleFiles) {
   if (!/[.](?:css|html|js|map)$/.test(file)) continue;
   const contents = await readFile(file, "utf8");
@@ -71,7 +77,7 @@ for (const expectedOrigin of [
 }
 
 console.log(
-  `Production web build passed with validated public configuration; ${bundleFiles.length} output files contain none of ${Object.keys(serverSecretSentinels).length} server-secret sentinels.`,
+  `Production web build passed with validated public configuration, no source maps, and ${bundleFiles.length} output files containing none of ${Object.keys(serverSecretSentinels).length} server-secret sentinels.`,
 );
 
 async function listFiles(directory) {

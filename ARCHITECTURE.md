@@ -27,7 +27,7 @@ Connected-account tokens are encrypted with Web Crypto AES-256-GCM. The cipherte
 4. The Worker enqueues only `{ targetId, mode, requestedAt }`; credentials never enter Queue messages.
 5. The consumer loads and decrypts credentials server-side. The first provider request sets `publish_request_sent_at` before sending so duplicate deliveries cannot silently issue another publish request.
 6. Each target persists its own selected media IDs, so a YouTube thumbnail is not accidentally sent to Instagram/TikTok. Validated UploadThing ranges stream to chunk/resumable provider sessions. Session URLs are encrypted in `platform_upload_state`; sanitized attempts never include them.
-7. Processing polls may continue safely. A definite API failure is recorded and acknowledged with no automatic retry. A network-ambiguous publication becomes `needs_review` unless a provider status handle can reconcile it.
+7. Processing polls may continue safely. A definite API failure is recorded and acknowledged with no automatic provider retry. A network-ambiguous publication becomes `needs_review` unless a provider status handle can reconcile it. Infrastructure-only Queue failures use bounded delivery retries and a dead-letter queue. Cron leases and redispatches stale `publishing`/`processing` targets; an existing upload session or status handle is continued, while a target with a recorded provider request is never blindly resubmitted.
 8. A unique `email_events.deduplication_key` prevents duplicate failure email.
 
 ## State model
