@@ -228,8 +228,7 @@ select is(
     public.mark_account_disconnect_revocation_started(
       'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      (select operation_id from phase2b_disconnect_state),
-      true
+      (select operation_id from phase2b_disconnect_state)
     ) ->> 'should_revoke'
   )::boolean,
   true,
@@ -241,8 +240,7 @@ select is(
     public.mark_account_disconnect_revocation_started(
       'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      (select operation_id from phase2b_disconnect_state),
-      true
+      (select operation_id from phase2b_disconnect_state)
     ) ->> 'should_revoke'
   )::boolean,
   false,
