@@ -27,23 +27,30 @@ export interface InstagramConfig {
 }
 
 interface InstagramPublishState {
-  version: 1;
+  version: 2;
   phase: "children" | "parent";
   accountId: string;
   creationIds: string[];
+  nextMediaIndex: number;
+  mediaCount: number;
   contentType: InstagramMetadata["contentType"];
-  caption: string;
 }
+
+type InstagramWritePhase =
+  | "instagram_child_container"
+  | "instagram_carousel_parent"
+  | "instagram_media_publish";
 
 function encodePublishState(state: InstagramPublishState): string {
   const bytes = new TextEncoder().encode(JSON.stringify(state));
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `ig1.${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+  return `ig2.${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
 }
 
 function decodePublishState(statusHandle: string): InstagramPublishState {
-  if (!statusHandle.startsWith("ig1."))
+  const legacy = statusHandle.startsWith("ig1.");
+  if (!legacy && !statusHandle.startsWith("ig2."))
     throw new Error("Unsupported Instagram publish status handle");
   const encoded = statusHandle.slice(4).replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "="));
@@ -51,16 +58,71 @@ function decodePublishState(statusHandle: string): InstagramPublishState {
     new TextDecoder().decode(
       Uint8Array.from(binary, (character) => character.charCodeAt(0)),
     ),
-  ) as InstagramPublishState;
+  ) as Record<string, unknown>;
+  const version = parsed.version;
+  const phase = parsed.phase;
+  const accountId = parsed.accountId;
+  const creationIds = parsed.creationIds;
+  const contentType = parsed.contentType;
   if (
-    parsed.version !== 1 ||
-    !["children", "parent"].includes(parsed.phase) ||
-    !parsed.accountId ||
-    !Array.isArray(parsed.creationIds) ||
-    parsed.creationIds.length === 0
+    typeof version !== "number" ||
+    ![1, 2].includes(version) ||
+    typeof phase !== "string" ||
+    !["children", "parent"].includes(phase) ||
+    typeof accountId !== "string" ||
+    !accountId ||
+    !Array.isArray(creationIds) ||
+    creationIds.length === 0 ||
+    creationIds.length > 10 ||
+    creationIds.some(
+      (creationId) =>
+        typeof creationId !== "string" ||
+        !creationId ||
+        creationId.length > 255,
+    ) ||
+    accountId.length > 255 ||
+    typeof contentType !== "string"
   )
     throw new Error("Invalid Instagram publish status handle");
-  return parsed;
+  const nextMediaIndex =
+    version === 1 ? creationIds.length : parsed.nextMediaIndex;
+  const mediaCount = version === 1 ? creationIds.length : parsed.mediaCount;
+  if (
+    typeof nextMediaIndex !== "number" ||
+    !Number.isSafeInteger(nextMediaIndex) ||
+    nextMediaIndex < 1 ||
+    typeof mediaCount !== "number" ||
+    !Number.isSafeInteger(mediaCount) ||
+    mediaCount < nextMediaIndex ||
+    mediaCount > 10 ||
+    ![
+      "feed_image",
+      "video",
+      "carousel",
+      "reel",
+      "story_image",
+      "story_video",
+    ].includes(contentType)
+  ) {
+    throw new Error("Invalid Instagram publish status handle");
+  }
+  return {
+    version: 2,
+    phase: phase as InstagramPublishState["phase"],
+    accountId,
+    creationIds: creationIds as string[],
+    nextMediaIndex,
+    mediaCount,
+    contentType: contentType as InstagramMetadata["contentType"],
+  };
+}
+
+function nextWritePhase(state: InstagramPublishState): InstagramWritePhase {
+  if (state.phase === "children" && state.nextMediaIndex < state.mediaCount)
+    return "instagram_child_container";
+  if (state.phase === "children" && state.contentType === "carousel")
+    return "instagram_carousel_parent";
+  return "instagram_media_publish";
 }
 
 export class InstagramAdapter implements PlatformAdapter {
@@ -270,56 +332,25 @@ export class InstagramAdapter implements PlatformAdapter {
         },
       };
     }
+    if (!input.media.length) throw new Error("Instagram media is missing");
     const metadata = input.metadata as InstagramMetadata;
-    const created: string[] = [];
-    for (const [index, media] of input.media.entries()) {
-      const params: Record<string, string> = {
-        access_token: input.accessToken,
-        ...(media.mimeType.startsWith("image/")
-          ? { image_url: input.deliveryUrls[index]! }
-          : { video_url: input.deliveryUrls[index]! }),
-      };
-      if (metadata.contentType === "carousel") params.is_carousel_item = "true";
-      if (metadata.contentType === "video") params.media_type = "VIDEO";
-      if (metadata.contentType === "reel") params.media_type = "REELS";
-      if (["story_image", "story_video"].includes(metadata.contentType))
-        params.media_type = "STORIES";
-      if (
-        metadata.contentType === "carousel" &&
-        media.mimeType.startsWith("video/")
-      )
-        params.media_type = "VIDEO";
-      if (
-        metadata.caption &&
-        metadata.contentType !== "story_image" &&
-        metadata.contentType !== "story_video"
-      ) {
-        params.caption = metadata.caption;
-      }
-      if (metadata.altText && metadata.contentType === "feed_image")
-        params.alt_text = metadata.altText;
-      const container = await jsonRequest<{ id: string }>(
-        this.fetcher,
-        `https://graph.instagram.com/${this.graphVersion}/${input.accountId}/media`,
-        {
-          operation: "publish",
-          method: "POST",
-          body: new URLSearchParams(params),
-        },
-      );
-      created.push(container.id);
-    }
+    const containerId = await this.createMediaContainer(input, 0);
     return {
       outcome: "processing" as const,
       statusHandle: encodePublishState({
-        version: 1,
+        version: 2,
         phase: "children",
         accountId: input.accountId,
-        creationIds: created,
+        creationIds: [containerId],
+        nextMediaIndex: 1,
+        mediaCount: input.media.length,
         contentType: metadata.contentType,
-        caption: metadata.caption,
       }),
-      sanitizedResponse: { creationIds: created, status: "container_created" },
+      sanitizedResponse: {
+        creationId: containerId,
+        mediaIndex: 0,
+        status: "container_created",
+      },
     };
   }
 
@@ -363,7 +394,59 @@ export class InstagramAdapter implements PlatformAdapter {
       };
     }
 
-    if (state.phase === "children" && state.contentType === "carousel") {
+    const phase = nextWritePhase(state);
+    return {
+      outcome: "processing" as const,
+      statusHandle,
+      nextProviderWrite: { phase },
+      sanitizedResponse: { statuses, nextPhase: phase },
+    };
+  }
+
+  async executePublishWrite(
+    input: PublishInput,
+    statusHandle: string,
+    phase: string,
+  ) {
+    if (!this.config.reviewApproved) {
+      return {
+        outcome: "failed" as const,
+        sanitizedResponse: { blocked: "meta_app_review_pending" },
+        error: {
+          code: "approval_required",
+          message: "Meta app review is not marked approved.",
+          retryable: false,
+        },
+      };
+    }
+    const state = decodePublishState(statusHandle);
+    if (state.accountId !== input.accountId)
+      throw new Error("Instagram publish state account mismatch");
+    const expectedPhase = nextWritePhase(state);
+    if (phase !== expectedPhase)
+      throw new Error("Instagram publish phase mismatch");
+    const metadata = input.metadata as InstagramMetadata;
+
+    if (expectedPhase === "instagram_child_container") {
+      const mediaIndex = state.nextMediaIndex;
+      const containerId = await this.createMediaContainer(input, mediaIndex);
+      const nextState: InstagramPublishState = {
+        ...state,
+        creationIds: [...state.creationIds, containerId],
+        nextMediaIndex: mediaIndex + 1,
+      };
+      return {
+        outcome: "processing" as const,
+        statusHandle: encodePublishState(nextState),
+        sanitizedResponse: {
+          creationId: containerId,
+          mediaIndex,
+          status: "container_created",
+        },
+      };
+    }
+
+    if (expectedPhase === "instagram_carousel_parent") {
       const carousel = await jsonRequest<{ id: string }>(
         this.fetcher,
         `https://graph.instagram.com/${this.graphVersion}/${state.accountId}/media`,
@@ -373,11 +456,18 @@ export class InstagramAdapter implements PlatformAdapter {
           body: new URLSearchParams({
             media_type: "CAROUSEL",
             children: state.creationIds.join(","),
-            caption: state.caption,
-            access_token: accessToken,
+            caption: metadata.caption,
+            access_token: input.accessToken,
           }),
         },
       );
+      if (!carousel.id)
+        throw {
+          code: "missing_remote_handle",
+          message: "Instagram did not return a carousel container ID",
+          retryable: false,
+          ambiguous: true,
+        };
       return {
         outcome: "processing" as const,
         statusHandle: encodePublishState({
@@ -401,10 +491,17 @@ export class InstagramAdapter implements PlatformAdapter {
         method: "POST",
         body: new URLSearchParams({
           creation_id: creationId,
-          access_token: accessToken,
+          access_token: input.accessToken,
         }),
       },
     );
+    if (!published.id)
+      throw {
+        code: "missing_remote_handle",
+        message: "Instagram did not return a published media ID",
+        retryable: false,
+        ambiguous: true,
+      };
     let remoteUrl: string | undefined;
     try {
       const url = new URL(
@@ -412,7 +509,7 @@ export class InstagramAdapter implements PlatformAdapter {
       );
       url.search = new URLSearchParams({
         fields: "permalink",
-        access_token: accessToken,
+        access_token: input.accessToken,
       }).toString();
       const media = await jsonRequest<{ permalink?: string }>(
         this.fetcher,
@@ -429,6 +526,59 @@ export class InstagramAdapter implements PlatformAdapter {
       ...(remoteUrl ? { remoteUrl } : {}),
       sanitizedResponse: { id: published.id, creationId },
     };
+  }
+
+  private async createMediaContainer(
+    input: PublishInput,
+    index: number,
+  ): Promise<string> {
+    const metadata = input.metadata as InstagramMetadata;
+    const media = input.media[index];
+    const deliveryUrl = input.deliveryUrls[index];
+    if (!media || !deliveryUrl)
+      throw new Error("Instagram media state is incomplete");
+    const params: Record<string, string> = {
+      access_token: input.accessToken,
+      ...(media.mimeType.startsWith("image/")
+        ? { image_url: deliveryUrl }
+        : { video_url: deliveryUrl }),
+    };
+    if (metadata.contentType === "carousel") params.is_carousel_item = "true";
+    if (metadata.contentType === "video") params.media_type = "VIDEO";
+    if (metadata.contentType === "reel") params.media_type = "REELS";
+    if (["story_image", "story_video"].includes(metadata.contentType))
+      params.media_type = "STORIES";
+    if (
+      metadata.contentType === "carousel" &&
+      media.mimeType.startsWith("video/")
+    )
+      params.media_type = "VIDEO";
+    if (
+      metadata.caption &&
+      metadata.contentType !== "carousel" &&
+      metadata.contentType !== "story_image" &&
+      metadata.contentType !== "story_video"
+    )
+      params.caption = metadata.caption;
+    if (metadata.altText && metadata.contentType === "feed_image")
+      params.alt_text = metadata.altText;
+    const container = await jsonRequest<{ id: string }>(
+      this.fetcher,
+      `https://graph.instagram.com/${this.graphVersion}/${input.accountId}/media`,
+      {
+        operation: "publish",
+        method: "POST",
+        body: new URLSearchParams(params),
+      },
+    );
+    if (!container.id)
+      throw {
+        code: "missing_remote_handle",
+        message: "Instagram did not return a container ID",
+        retryable: false,
+        ambiguous: true,
+      };
+    return container.id;
   }
 
   async fetchAnalytics(request: AnalyticsRequest) {

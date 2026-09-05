@@ -25,9 +25,12 @@ const requiredTables = [
   "email_events",
   "audit_log",
   "rate_limit_buckets",
+  "account_disconnect_transactions",
 ];
 const missingTables = requiredTables.filter(
-  (table) => !sql.includes(`create table public.${table}`),
+  (table) =>
+    !sql.includes(`create table public.${table}`) &&
+    !sql.includes(`create table if not exists public.${table}`),
 );
 const requirements = {
   "atomic claim function":
@@ -71,6 +74,16 @@ const requirements = {
     sql.includes("on conflict (deduplication_key) do nothing") &&
     sql.includes("email_events_delivery_retry_idx") &&
     sql.includes("next_attempt_at"),
+  "durable disconnect recovery":
+    sql.includes("function public.begin_account_disconnect") &&
+    sql.includes(
+      "function public.mark_account_disconnect_revocation_started",
+    ) &&
+    sql.includes("function public.record_account_disconnect_revocation") &&
+    sql.includes("function public.complete_account_disconnect") &&
+    sql.includes("account_disconnect_owner_select") &&
+    sql.includes("provider_request_sent_at") &&
+    sql.includes("connected_accounts_clear_disconnect_on_reconnect"),
 };
 if (missingTables.length || Object.values(requirements).includes(false)) {
   console.error({ missingTables, requirements });

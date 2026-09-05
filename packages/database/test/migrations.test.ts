@@ -25,6 +25,7 @@ describe("Supabase migrations", () => {
       "email_events",
       "audit_log",
       "rate_limit_buckets",
+      "account_disconnect_transactions",
     ]) {
       expect(sql).toContain(
         `alter table public.${table} enable row level security`,
@@ -60,5 +61,12 @@ describe("Supabase migrations", () => {
     expect(sql).toContain("next_attempt_at");
     expect(sql).toContain("deletion_blocked_reason");
     expect(sql).toContain("delete_installation_data");
+    expect(sql).toContain("function public.begin_account_disconnect");
+    expect(sql).toContain(
+      "function public.mark_account_disconnect_revocation_started",
+    );
+    expect(sql).toContain("function public.complete_account_disconnect");
+    expect(sql).toContain("account_disconnect_owner_select");
+    expect(sql).toContain("connected_accounts_clear_disconnect_on_reconnect");
   });
 });

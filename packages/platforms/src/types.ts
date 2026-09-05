@@ -99,6 +99,11 @@ export interface PlatformAdapter {
     accessToken: string,
     statusHandle: string,
   ): Promise<PublishResult>;
+  executePublishWrite?(
+    input: PublishInput,
+    statusHandle: string,
+    phase: string,
+  ): Promise<PublishResult>;
   fetchAnalytics(request: AnalyticsRequest): Promise<NormalizedMetric[]>;
   uploadThumbnail?(
     accessToken: string,

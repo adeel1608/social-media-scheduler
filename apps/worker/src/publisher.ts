@@ -13,6 +13,7 @@ import {
   providerRequest,
   trustedUploadSessionUrl,
   type PlatformAdapter,
+  type PublishInput,
 } from "@scheduler/platforms";
 
 import { adapterFor } from "./adapters";
@@ -372,6 +373,52 @@ export async function updateMediaRetentionForPost(
   }
 }
 
+function selectedPublishMedia(target: TargetRecord): PublishInput["media"] {
+  const selected = new Set(target.selected_media_ids);
+  return [...target.posts.post_media]
+    .filter(({ media_assets: item }) => selected.has(item.id))
+    .sort((a, b) => a.sort_order - b.sort_order)
+    .map(({ media_assets: item }) => ({
+      id: item.id,
+      objectKey: item.object_key,
+      storageProvider: item.storage_provider,
+      providerFileKey: item.provider_file_key,
+      providerUrl: item.provider_url,
+      mimeType: item.mime_type,
+      sizeBytes: item.size_bytes,
+      ...(item.width ? { width: item.width } : {}),
+      ...(item.height ? { height: item.height } : {}),
+      ...(item.duration_seconds
+        ? { durationSeconds: item.duration_seconds }
+        : {}),
+    }));
+}
+
+async function publishInputForTarget(
+  env: Env,
+  target: TargetRecord,
+  accessToken: string,
+  dependencies: ClaimedQueueJobDependencies,
+): Promise<PublishInput> {
+  const media = selectedPublishMedia(target);
+  const deliveryUrls = await Promise.all(
+    media.map((item) =>
+      dependencies.signedDeliveryUrl(env, {
+        mediaId: item.id,
+        ownerId: target.owner_id,
+      }),
+    ),
+  );
+  return {
+    accountId: String(target.connected_accounts.remote_account_id),
+    accessToken,
+    idempotencyKey: target.idempotency_key,
+    metadata: target.metadata,
+    media,
+    deliveryUrls,
+  };
+}
+
 export async function processQueueJob(
   env: Env,
   job: QueueJob,
@@ -560,24 +607,7 @@ export async function processClaimedQueueJob(
     }
   }
 
-  const selected = new Set(target.selected_media_ids);
-  const mediaRows = [...target.posts.post_media]
-    .filter(({ media_assets: item }) => selected.has(item.id))
-    .sort((a, b) => a.sort_order - b.sort_order);
-  const media = mediaRows.map(({ media_assets: item }) => ({
-    id: item.id,
-    objectKey: item.object_key,
-    storageProvider: item.storage_provider,
-    providerFileKey: item.provider_file_key,
-    providerUrl: item.provider_url,
-    mimeType: item.mime_type,
-    sizeBytes: item.size_bytes,
-    ...(item.width ? { width: item.width } : {}),
-    ...(item.height ? { height: item.height } : {}),
-    ...(item.duration_seconds
-      ? { durationSeconds: item.duration_seconds }
-      : {}),
-  }));
+  const media = selectedPublishMedia(target);
   const validation = adapter.validatePost(target.metadata, media);
   if (!validation.valid) {
     const attempt = await dependencies.nextAttempt(db, target);
@@ -592,22 +622,12 @@ export async function processClaimedQueueJob(
     });
     return queueResult(target, "validation_or_authorization_failure", "failed");
   }
-  const deliveryUrls = await Promise.all(
-    media.map((item) =>
-      dependencies.signedDeliveryUrl(env, {
-        mediaId: item.id,
-        ownerId: target.owner_id,
-      }),
-    ),
-  );
-  const publishInput = {
-    accountId: target.connected_accounts.remote_account_id,
+  const publishInput = await publishInputForTarget(
+    env,
+    target,
     accessToken,
-    idempotencyKey: target.idempotency_key,
-    metadata: target.metadata,
-    media,
-    deliveryUrls,
-  };
+    dependencies,
+  );
   if (adapter.preflightPublish) {
     let preflightResult: PublishResult | null;
     try {
@@ -1021,6 +1041,38 @@ export async function pollStatus(
 ): Promise<QueueProcessResult> {
   const state = target.platform_upload_state;
   if (!state?.attemptId) throw new Error("Publish attempt state is missing");
+  const pendingProviderWrite = state.providerWrite as
+    { phase?: unknown; requestSentAt?: unknown } | undefined;
+  if (pendingProviderWrite) {
+    const phase =
+      typeof pendingProviderWrite.phase === "string"
+        ? pendingProviderWrite.phase.slice(0, 100)
+        : "unknown";
+    await dependencies.recordFinal(
+      env,
+      db,
+      target,
+      {
+        id: state.attemptId as string,
+        number: Number(state.attemptNumber ?? 1),
+      },
+      {
+        outcome: "ambiguous",
+        sanitizedResponse: {
+          reason: "unresolved_provider_write_marker",
+          phase,
+        },
+        error: {
+          code: "ambiguous_provider_write",
+          message:
+            "A provider write may have succeeded, but its result was not durably recorded. Review Instagram before resolving this target.",
+          retryable: false,
+        },
+      },
+      target.publish_request_sent_at,
+    );
+    return queueResult(target, "ambiguous_provider_acceptance", "needs_review");
+  }
   const statusHandle = state?.statusHandle as string | undefined;
   if (!statusHandle) {
     const attempt = {
@@ -1098,6 +1150,17 @@ export async function pollStatus(
       normalized.ambiguous ? "needs_review" : "failed",
     );
   }
+  if (result.nextProviderWrite) {
+    return executeDurableProviderWrite(
+      env,
+      db,
+      target,
+      accessToken,
+      statusHandle,
+      result.nextProviderWrite.phase,
+      dependencies,
+    );
+  }
   if (result.outcome === "processing") {
     if (result.statusHandle && result.statusHandle !== statusHandle) {
       await db.update(`post_targets?id=eq.${target.id}`, {
@@ -1144,6 +1207,151 @@ export async function pollStatus(
     target.publish_request_sent_at,
   );
   return queueResult(target, classifyPublishResult(result), result.outcome);
+}
+
+async function executeDurableProviderWrite(
+  env: Env,
+  db: SupabaseRest,
+  target: TargetRecord,
+  accessToken: string,
+  statusHandle: string,
+  phase: string,
+  dependencies: ClaimedQueueJobDependencies,
+): Promise<QueueProcessResult> {
+  const state = target.platform_upload_state!;
+  const attempt = {
+    id: state.attemptId as string,
+    number: Number(state.attemptNumber ?? 1),
+  };
+  const adapter = dependencies.adapterFor(target.platform, env);
+  if (!adapter.executePublishWrite || !/^[a-z0-9_:-]{1,100}$/.test(phase)) {
+    await dependencies.recordFinal(
+      env,
+      db,
+      target,
+      attempt,
+      {
+        outcome: "ambiguous",
+        sanitizedResponse: {
+          reason: "unsupported_provider_write_continuation",
+        },
+        error: {
+          code: "unsupported_provider_write_continuation",
+          message:
+            "The provider requested an unsupported publishing continuation. Review the platform before resolving this target.",
+          retryable: false,
+        },
+      },
+      target.publish_request_sent_at,
+    );
+    return queueResult(target, "ambiguous_provider_acceptance", "needs_review");
+  }
+
+  // Resolve all input before crossing the durable write-ahead boundary. The
+  // marker update below is intentionally the final await before the Meta write.
+  const publishInput = await publishInputForTarget(
+    env,
+    target,
+    accessToken,
+    dependencies,
+  );
+  const providerWriteSentAt = dependencies.now();
+  await db.update(`post_targets?id=eq.${target.id}`, {
+    status: "processing",
+    platform_upload_state: {
+      ...state,
+      statusHandle,
+      providerWrite: {
+        phase,
+        requestSentAt: providerWriteSentAt,
+      },
+    },
+    updated_at: providerWriteSentAt,
+  });
+
+  let result: PublishResult;
+  try {
+    result = await adapter.executePublishWrite(
+      publishInput,
+      statusHandle,
+      phase,
+    );
+  } catch (error) {
+    const normalized = adapter.normalizeError(error);
+    result = {
+      outcome: normalized.ambiguous ? "ambiguous" : "failed",
+      sanitizedResponse: {
+        code: normalized.code,
+        httpStatus: normalized.httpStatus,
+        phase,
+      },
+      error: {
+        code: normalized.code,
+        message: normalized.message,
+        retryable: false,
+      },
+    };
+  }
+
+  if (result.outcome === "processing") {
+    if (!result.statusHandle) {
+      result = {
+        outcome: "ambiguous",
+        sanitizedResponse: {
+          ...result.sanitizedResponse,
+          phase,
+          reason: "provider_write_missing_status_handle",
+        },
+        error: {
+          code: "missing_status_handle",
+          message:
+            "The provider write succeeded without a durable status identifier. Review Instagram before resolving this target.",
+          retryable: false,
+        },
+      };
+    } else {
+      const { providerWrite: _completedWrite, ...priorState } = state;
+      await db.update(`post_targets?id=eq.${target.id}`, {
+        status: "processing",
+        platform_upload_state: {
+          ...priorState,
+          statusHandle: result.statusHandle,
+          lastProviderWrite: {
+            phase,
+            completedAt: dependencies.now(),
+          },
+        },
+      });
+      await db.update(`publish_attempts?id=eq.${attempt.id}`, {
+        request_sent_at: target.publish_request_sent_at,
+        sanitized_response: redactSecrets(result.sanitizedResponse),
+      });
+      await dependencies.enqueueQueueJob(
+        env,
+        {
+          targetId: target.id,
+          mode: "poll",
+          requestedAt: new Date().toISOString(),
+        },
+        60,
+      );
+      return queueResult(target, "safe_continuation", "processing");
+    }
+  }
+
+  await dependencies.recordFinal(
+    env,
+    db,
+    target,
+    attempt,
+    result,
+    target.publish_request_sent_at,
+  );
+  return queueResult(
+    target,
+    classifyPublishResult(result),
+    result.outcome === "ambiguous" ? "needs_review" : result.outcome,
+  );
 }
 
 async function uploadYouTubeThumbnailIfSelected(

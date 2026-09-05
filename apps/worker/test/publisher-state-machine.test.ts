@@ -502,3 +502,217 @@ describe("publish queue operation-aware state machine", () => {
     expect(platformAdapter.publish).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Instagram durable provider-write phases", () => {
+  const baseState = {
+    statusHandle: "instagram-status-handle",
+    attemptId: "attempt-1",
+    attemptNumber: 1,
+  };
+
+  function instagramTarget(
+    platformState: Record<string, unknown> = baseState,
+  ): TargetRecord {
+    return target({
+      platform: "instagram",
+      status: "processing",
+      publish_request_sent_at: "2026-09-05T01:02:03.000Z",
+      platform_upload_state: platformState,
+    });
+  }
+
+  function instagramAdapter(
+    phase: string,
+    executePublishWrite: PlatformAdapter["executePublishWrite"],
+  ): PlatformAdapter {
+    return adapter({
+      platform: "instagram",
+      getPublishStatus: vi.fn(async (_token, statusHandle) => ({
+        outcome: "processing",
+        statusHandle,
+        nextProviderWrite: { phase },
+        sanitizedResponse: {},
+      })),
+      executePublishWrite,
+    });
+  }
+
+  it("does not repeat accepted carousel parent creation when handle persistence fails", async () => {
+    const executePublishWrite = vi.fn(async () => ({
+      outcome: "processing" as const,
+      statusHandle: "instagram-parent-handle",
+      sanitizedResponse: { creationId: "parent-1" },
+    }));
+    const platformAdapter = instagramAdapter(
+      "instagram_carousel_parent",
+      executePublishWrite,
+    );
+    const deps = dependencies(platformAdapter);
+    const db = new FakeDatabase();
+    let writeAheadState: Record<string, unknown> | undefined;
+    db.failUpdate = (_path, body) => {
+      const state = body.platform_upload_state as
+        Record<string, unknown> | undefined;
+      if (state?.providerWrite) writeAheadState = state;
+      return Boolean(state?.lastProviderWrite);
+    };
+
+    await expect(
+      processClaimedQueueJob(
+        env,
+        db as unknown as SupabaseRest,
+        { ...job, mode: "poll" },
+        instagramTarget(),
+        deps,
+      ),
+    ).rejects.toThrow("database unavailable");
+    expect(executePublishWrite).toHaveBeenCalledTimes(1);
+    expect(writeAheadState).toMatchObject({
+      providerWrite: { phase: "instagram_carousel_parent" },
+    });
+
+    db.failUpdate = undefined;
+    await expect(
+      processClaimedQueueJob(
+        env,
+        db as unknown as SupabaseRest,
+        { ...job, mode: "poll" },
+        instagramTarget(writeAheadState),
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      classification: "ambiguous_provider_acceptance",
+      state: "needs_review",
+    });
+    expect(executePublishWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not repeat accepted media_publish when final persistence fails", async () => {
+    const executePublishWrite = vi.fn(async () => ({
+      outcome: "published" as const,
+      remoteContentId: "instagram-media-1",
+      sanitizedResponse: { id: "instagram-media-1" },
+    }));
+    const platformAdapter = instagramAdapter(
+      "instagram_media_publish",
+      executePublishWrite,
+    );
+    const deps = dependencies(platformAdapter);
+    deps.recordFinal.mockRejectedValueOnce(new Error("database unavailable"));
+    const db = new FakeDatabase();
+
+    await expect(
+      processClaimedQueueJob(
+        env,
+        db as unknown as SupabaseRest,
+        { ...job, mode: "poll" },
+        instagramTarget(),
+        deps,
+      ),
+    ).rejects.toThrow("database unavailable");
+    const writeAheadState = db.updates.find(({ body }) =>
+      Boolean(
+        (body.platform_upload_state as Record<string, unknown> | undefined)
+          ?.providerWrite,
+      ),
+    )?.body.platform_upload_state as Record<string, unknown>;
+
+    await expect(
+      processClaimedQueueJob(
+        env,
+        db as unknown as SupabaseRest,
+        { ...job, mode: "poll" },
+        instagramTarget(writeAheadState),
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      classification: "ambiguous_provider_acceptance",
+      state: "needs_review",
+    });
+    expect(executePublishWrite).toHaveBeenCalledTimes(1);
+    expect(deps.recordFinal).toHaveBeenLastCalledWith(
+      env,
+      db,
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ outcome: "ambiguous" }),
+      "2026-09-05T01:02:03.000Z",
+    );
+  });
+
+  it.each([
+    ["carousel parent timeout", "instagram_carousel_parent", "network_error"],
+    ["carousel parent 5xx", "instagram_carousel_parent", "meta_503"],
+    ["media_publish timeout", "instagram_media_publish", "network_error"],
+    ["media_publish 5xx", "instagram_media_publish", "meta_503"],
+  ])("fails closed after %s", async (_case, phase, code) => {
+    const executePublishWrite = vi.fn(async () => {
+      throw {
+        code,
+        status: code === "meta_503" ? 503 : undefined,
+        retryable: false,
+        ambiguous: true,
+      };
+    });
+    const platformAdapter = instagramAdapter(phase, executePublishWrite);
+    const deps = dependencies(platformAdapter);
+    const db = new FakeDatabase();
+
+    await expect(
+      processClaimedQueueJob(
+        env,
+        db as unknown as SupabaseRest,
+        { ...job, mode: "poll" },
+        instagramTarget(),
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      classification: "ambiguous_provider_acceptance",
+      state: "needs_review",
+    });
+    expect(executePublishWrite).toHaveBeenCalledTimes(1);
+    expect(deps.recordFinal).toHaveBeenCalledWith(
+      env,
+      db,
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ outcome: "ambiguous" }),
+      "2026-09-05T01:02:03.000Z",
+    );
+  });
+
+  it.each([
+    "instagram_child_container",
+    "instagram_carousel_parent",
+    "instagram_media_publish",
+  ])(
+    "never executes a second %s write after redelivery finds its marker",
+    async (phase) => {
+      const executePublishWrite = vi.fn();
+      const platformAdapter = instagramAdapter(phase, executePublishWrite);
+      const deps = dependencies(platformAdapter);
+      const db = new FakeDatabase();
+
+      await expect(
+        processClaimedQueueJob(
+          env,
+          db as unknown as SupabaseRest,
+          { ...job, mode: "poll" },
+          instagramTarget({
+            ...baseState,
+            providerWrite: {
+              phase,
+              requestSentAt: "2026-09-05T01:03:00.000Z",
+            },
+          }),
+          deps,
+        ),
+      ).resolves.toMatchObject({
+        classification: "ambiguous_provider_acceptance",
+        state: "needs_review",
+      });
+      expect(platformAdapter.getPublishStatus).not.toHaveBeenCalled();
+      expect(executePublishWrite).not.toHaveBeenCalled();
+    },
+  );
+});

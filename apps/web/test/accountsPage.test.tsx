@@ -215,7 +215,26 @@ describe("authoritative Connected Accounts UI", () => {
         ok: false,
         providerRevoked: true,
         localCleanupPending: true,
-        confirmationToken: "signed-confirmation",
+        disconnectCleanup: {
+          operationId: "durable-operation",
+          state: "provider_revoked",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          providerRevoked: true,
+          revocationUncertain: false,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: [
+          account("tiktok", {
+            disconnect_cleanup: {
+              operationId: "durable-operation",
+              state: "provider_revoked",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              providerRevoked: true,
+              revocationUncertain: false,
+            },
+          }),
+        ],
       })
       .mockResolvedValueOnce({ ok: true, providerRevoked: true })
       .mockResolvedValueOnce({ data: [] });
@@ -235,11 +254,158 @@ describe("authoritative Connected Accounts UI", () => {
       session,
       { method: "DELETE" },
     ]);
-    expect(mocks.apiRequest.mock.calls[2]?.[0]).toBe(
+    expect(mocks.apiRequest.mock.calls[3]?.[0]).toBe(
       "/api/accounts/tiktok-account/disconnect/confirm",
     );
     expect(
+      JSON.parse(String(mocks.apiRequest.mock.calls[3]?.[2]?.body)),
+    ).toEqual({ operationId: "durable-operation" });
+  });
+
+  it("rehydrates pending cleanup after refresh and browser re-entry", async () => {
+    mocks.apiRequest.mockResolvedValue({
+      data: [
+        account("instagram", {
+          disconnect_cleanup: {
+            operationId: "rehydrated-operation",
+            state: "revocation_uncertain",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            providerRevoked: false,
+            revocationUncertain: true,
+          },
+        }),
+      ],
+    });
+    const first = render(<AccountsPage />);
+
+    expect(
+      await screen.findByRole("button", { name: "Confirm local cleanup" }),
+    ).toBeTruthy();
+    first.unmount();
+    render(<AccountsPage />);
+    expect(
+      await screen.findByRole("button", { name: "Confirm local cleanup" }),
+    ).toBeTruthy();
+    expect(mocks.apiRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers a lost DELETE response from authoritative server state", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mocks.apiRequest
+      .mockResolvedValueOnce({ data: [account("youtube")] })
+      .mockRejectedValueOnce(new Error("Response was lost"))
+      .mockResolvedValueOnce({
+        data: [
+          account("youtube", {
+            disconnect_cleanup: {
+              operationId: "response-loss-operation",
+              state: "revocation_started",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              providerRevoked: false,
+              revocationUncertain: true,
+            },
+          }),
+        ],
+      });
+    render(<AccountsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    expect(await screen.findByText("Response was lost")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Confirm local cleanup" }),
+    ).toBeTruthy();
+    expect(mocks.apiRequest).toHaveBeenCalledTimes(3);
+  });
+
+  it("resumes a prepared disconnect before offering local cleanup", async () => {
+    const prepared = account("tiktok", {
+      disconnect_cleanup: {
+        operationId: "prepared-operation",
+        state: "prepared",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        providerRevoked: false,
+        revocationUncertain: false,
+      },
+    });
+    const revoked = account("tiktok", {
+      disconnect_cleanup: {
+        operationId: "prepared-operation",
+        state: "provider_revoked",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        providerRevoked: true,
+        revocationUncertain: false,
+      },
+    });
+    mocks.apiRequest
+      .mockResolvedValueOnce({ data: [prepared] })
+      .mockResolvedValueOnce({
+        ok: false,
+        providerRevoked: true,
+        localCleanupPending: true,
+        disconnectCleanup: revoked.disconnect_cleanup,
+      })
+      .mockResolvedValueOnce({ data: [revoked] });
+    render(<AccountsPage />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Resume disconnect" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Confirm local cleanup" }),
+    ).toBeTruthy();
+    expect(mocks.apiRequest.mock.calls[1]).toMatchObject([
+      "/api/accounts/tiktok-account",
+      session,
+      { method: "DELETE" },
+    ]);
+    expect(
+      mocks.apiRequest.mock.calls.some(
+        ([path]) => path === "/api/accounts/tiktok-account/disconnect/confirm",
+      ),
+    ).toBe(false);
+  });
+
+  it("renews an expired cleanup record without a browser-side revocation retry", async () => {
+    mocks.apiRequest
+      .mockResolvedValueOnce({
+        data: [
+          account("instagram", {
+            disconnect_cleanup: {
+              operationId: "expired-operation",
+              state: "provider_revoked",
+              expiresAt: "2000-01-01T00:00:00.000Z",
+              providerRevoked: true,
+              revocationUncertain: false,
+            },
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        localCleanupPending: true,
+        disconnectCleanup: {
+          operationId: "renewed-operation",
+          state: "provider_revoked",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          providerRevoked: true,
+          revocationUncertain: false,
+        },
+      })
+      .mockResolvedValueOnce({ ok: true, providerRevoked: true })
+      .mockResolvedValueOnce({ data: [] });
+    render(<AccountsPage />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Resume local cleanup" }),
+    );
+    await screen.findByText("Instagram was disconnected.");
+    expect(mocks.apiRequest.mock.calls[1]).toMatchObject([
+      "/api/accounts/instagram-account",
+      session,
+      { method: "DELETE" },
+    ]);
+    expect(
       JSON.parse(String(mocks.apiRequest.mock.calls[2]?.[2]?.body)),
-    ).toEqual({ confirmationToken: "signed-confirmation" });
+    ).toEqual({ operationId: "renewed-operation" });
   });
 });

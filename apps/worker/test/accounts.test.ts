@@ -64,6 +64,35 @@ describe("connected account response sanitization", () => {
     }
   });
 
+  it("exposes only owner-safe durable cleanup state", () => {
+    const result = sanitizeConnectedAccount({
+      id: "account-1",
+      platform: "instagram",
+      username: "owner",
+      connection_status: "connected",
+      approval_state: "approved",
+      metadata: {},
+      disconnect_cleanup: {
+        account_id: "account-1",
+        owner_id: "owner-secret-id",
+        operation_id: "operation-1",
+        state: "revocation_uncertain",
+        expires_at: "2026-09-05T02:00:00.000Z",
+        provider_request_sent_at: "2026-09-05T01:00:00.000Z",
+      },
+    });
+
+    expect(result?.disconnect_cleanup).toEqual({
+      operationId: "operation-1",
+      state: "revocation_uncertain",
+      expiresAt: "2026-09-05T02:00:00.000Z",
+      providerRevoked: false,
+      revocationUncertain: true,
+    });
+    expect(JSON.stringify(result)).not.toContain("owner-secret-id");
+    expect(JSON.stringify(result)).not.toContain("provider_request_sent_at");
+  });
+
   it("drops malformed account rows instead of guessing", () => {
     expect(
       sanitizeConnectedAccount({

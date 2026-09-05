@@ -12,15 +12,12 @@ import { cors } from "hono/cors";
 import { syncAnalyticsBatch } from "./analytics";
 import { sanitizeConnectedAccount } from "./accounts";
 import {
-  LocalDisconnectPendingError,
-  revokeBeforeLocalDisconnect,
+  confirmDurableAccountDisconnect,
+  disconnectAccountDurably,
   revokeAccountsForInstallationDeletion,
+  type DisconnectTransaction,
   type RevocableAccount,
 } from "./account-revocation";
-import {
-  createDisconnectConfirmation,
-  verifyDisconnectConfirmation,
-} from "./disconnect-confirmation";
 import { adapterFor } from "./adapters";
 import type { Variables } from "./auth";
 import { ownerAuth } from "./auth";
@@ -30,7 +27,7 @@ import {
   type Env,
   type QueueJob,
 } from "./env";
-import { DatabaseRequestError, ownerDatabase, SupabaseRest } from "./database";
+import { ownerDatabase, SupabaseRest } from "./database";
 import oauthRoutes from "./oauth-routes";
 import { logWorkerError } from "./logging";
 import { retryFailedNotifications } from "./notifications";
@@ -49,6 +46,8 @@ import {
 import { handleUploadThingRequest } from "./uploadthing";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 app.use("*", async (c, next) => {
   for (const [name, value] of Object.entries(securityHeaders()))
@@ -188,11 +187,26 @@ app.get("/api/storage", async (c) => {
 
 app.get("/api/accounts", async (c) => {
   const db = ownerDatabase(c.env, c.get("jwt"));
-  const rows = await db.select<Array<Record<string, unknown>>>(
-    `connected_accounts?owner_id=eq.${c.get("user").id}&select=id,platform,username,connection_status,approval_state,metadata&order=platform`,
+  const [rows, transactions] = await Promise.all([
+    db.select<Array<Record<string, unknown>>>(
+      `connected_accounts?owner_id=eq.${c.get("user").id}&select=id,platform,username,connection_status,approval_state,metadata&order=platform`,
+    ),
+    db.select<DisconnectTransaction[]>(
+      `account_disconnect_transactions?owner_id=eq.${c.get("user").id}&state=neq.completed&select=account_id,operation_id,state,expires_at`,
+    ),
+  ]);
+  const cleanupByAccount = new Map(
+    transactions.map((transaction) => [transaction.account_id, transaction]),
   );
   return c.json({
-    data: rows.map(sanitizeConnectedAccount).filter((row) => row !== null),
+    data: rows
+      .map((row) =>
+        sanitizeConnectedAccount({
+          ...row,
+          disconnect_cleanup: cleanupByAccount.get(String(row.id)),
+        }),
+      )
+      .filter((row) => row !== null),
   });
 });
 
@@ -203,73 +217,78 @@ app.delete("/api/accounts/:id", async (c) => {
   );
   const account = rows[0];
   if (!account) return c.json({ error: "account_not_found" }, 404);
-  try {
-    await revokeBeforeLocalDisconnect(c.env, account, () =>
-      markAccountDisconnected(db, c.req.param("id"), c.get("user").id),
-    );
-  } catch (error) {
-    if (!(error instanceof LocalDisconnectPendingError)) throw error;
-    const confirmationToken = await createDisconnectConfirmation(
-      c.env,
-      c.req.param("id"),
-      c.get("user").id,
-    );
-    return c.json(
-      {
-        ok: false,
-        providerRevoked: true,
-        localCleanupPending: true,
-        confirmationToken,
+  const result = await disconnectAccountDurably(
+    c.env,
+    new SupabaseRest(c.env),
+    c.req.param("id"),
+    c.get("user").id,
+    account,
+  );
+  if (result.completed)
+    return c.json({
+      ok: true,
+      providerRevoked: result.providerRevoked,
+      revocationUncertain: result.revocationUncertain,
+      alreadyCompleted: !result.completedNow,
+    });
+  return c.json(
+    {
+      ok: false,
+      providerRevoked: result.providerRevoked,
+      revocationUncertain: result.revocationUncertain,
+      localCleanupPending: true,
+      disconnectCleanup: {
+        operationId: result.transaction.operation_id,
+        state: result.transaction.state,
+        expiresAt: result.transaction.expires_at,
       },
-      202,
-    );
-  }
-  return c.json({ ok: true });
+    },
+    202,
+  );
 });
 
 app.post("/api/accounts/:id/disconnect/confirm", async (c) => {
   const input = (await c.req.json().catch(() => null)) as {
-    confirmationToken?: unknown;
+    operationId?: unknown;
   } | null;
   const accountId = c.req.param("id");
   const ownerId = c.get("user").id;
   if (
-    typeof input?.confirmationToken !== "string" ||
-    !(await verifyDisconnectConfirmation(
-      c.env,
-      input.confirmationToken,
-      accountId,
-      ownerId,
-    ))
+    typeof input?.operationId !== "string" ||
+    !uuidPattern.test(input.operationId)
   ) {
     return c.json({ error: "invalid_disconnect_confirmation" }, 400);
   }
-  await markAccountDisconnected(
-    ownerDatabase(c.env, c.get("jwt")),
+  const rows = await ownerDatabase(c.env, c.get("jwt")).select<
+    DisconnectTransaction[]
+  >(
+    `account_disconnect_transactions?account_id=eq.${encodeURIComponent(accountId)}&owner_id=eq.${ownerId}&operation_id=eq.${encodeURIComponent(input.operationId)}&select=account_id,operation_id,state,expires_at,provider_outcome&limit=1`,
+  );
+  const transaction = rows[0];
+  if (!transaction)
+    return c.json({ error: "disconnect_cleanup_not_found" }, 404);
+  if (transaction.state === "completed")
+    return c.json({
+      ok: true,
+      providerRevoked: transaction.provider_outcome === "confirmed",
+      revocationUncertain: transaction.provider_outcome === "uncertain",
+      alreadyCompleted: true,
+    });
+  if (new Date(transaction.expires_at).getTime() <= Date.now())
+    return c.json({ error: "disconnect_cleanup_expired" }, 410);
+  const completed = await confirmDurableAccountDisconnect(
+    new SupabaseRest(c.env),
     accountId,
     ownerId,
+    input.operationId,
   );
-  return c.json({ ok: true, providerRevoked: true });
+  return c.json({
+    ok: true,
+    providerRevoked: completed.provider_outcome === "confirmed",
+    revocationUncertain: completed.provider_outcome === "uncertain",
+    alreadyCompleted: completed.completed_now !== true,
+  });
 });
-
-async function markAccountDisconnected(
-  db: SupabaseRest,
-  accountId: string,
-  ownerId: string,
-) {
-  const rows = await db.update<Array<{ id: string }>>(
-    `connected_accounts?id=eq.${encodeURIComponent(accountId)}&owner_id=eq.${ownerId}`,
-    {
-      connection_status: "disconnected",
-      encrypted_access_token: "revoked",
-      access_token_nonce: "revoked",
-      encrypted_refresh_token: null,
-      refresh_token_nonce: null,
-      updated_at: new Date().toISOString(),
-    },
-  );
-  if (!rows.length) throw new DatabaseRequestError(409);
-}
 
 app.get("/api/queue", async (c) => {
   const parsed = paginationSchema.safeParse(c.req.query());

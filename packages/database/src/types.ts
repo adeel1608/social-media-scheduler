@@ -35,6 +35,26 @@ export interface Database {
           updated_at: string;
         };
       };
+      account_disconnect_transactions: {
+        Row: {
+          account_id: string;
+          owner_id: string;
+          operation_id: string;
+          state:
+            | "prepared"
+            | "revocation_started"
+            | "provider_revoked"
+            | "revocation_uncertain"
+            | "completed";
+          provider_outcome: "confirmed" | "uncertain" | null;
+          expires_at: string;
+          provider_request_sent_at: string | null;
+          provider_result_recorded_at: string | null;
+          completed_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+      };
       media_assets: {
         Row: {
           id: string;

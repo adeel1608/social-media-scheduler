@@ -67,8 +67,27 @@ if (!notificationSchemaResponse.ok) {
   );
 }
 
+let phase2bResponse;
+try {
+  phase2bResponse = await boundedFetch(
+    new URL("/rest/v1/rpc/verify_phase_2b_schema", baseUrl),
+    { method: "POST", headers, body: "{}" },
+  );
+} catch {
+  throw new Error("Phase 2B migration verification request failed");
+}
+if (!phase2bResponse.ok) {
+  throw new Error(
+    `Phase 2B schema is missing or inaccessible to service_role (HTTP ${phase2bResponse.status})`,
+  );
+}
+const phase2bResult = await phase2bResponse.json().catch(() => null);
+if (phase2bResult?.ready !== true) {
+  throw new Error("Phase 2B schema preflight did not report ready");
+}
+
 console.log(
-  "Verified claim_stale_targets service-role access and notification reconciliation schema with non-mutating preflights.",
+  "Verified queue recovery, notification reconciliation, and Phase 2B schemas with non-mutating service-role preflights.",
 );
 
 async function boundedFetch(url, init) {

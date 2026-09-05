@@ -21,8 +21,9 @@ local-development, database-testing, and RLS documentation on 2026-09-05.
 
    CI runs the same disposable-stack verification. The production deployment
    workflow also makes a zero-row, non-mutating service-role call to
-   `claim_stale_targets` and a zero-row notification-schema query; it stops
-   before Worker deployment if either required migration is missing or
+   `claim_stale_targets`, a zero-row notification-schema query, and the
+   `verify_phase_2b_schema` preflight for durable disconnect recovery; it stops
+   before Worker deployment if any required migration is missing or
    inaccessible.
 
 4. Authentication > URL Configuration: set Site URL to the exact HTTPS web

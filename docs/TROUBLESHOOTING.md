@@ -80,7 +80,9 @@ Run `corepack pnpm db:validate`, start a disposable local stack with
 `corepack pnpm exec supabase start`, and run `corepack pnpm db:test`. Inspect
 `corepack pnpm supabase db push --dry-run` and confirm migrations are applied
 in filename order. The production deployment must stop before Worker deployment
-if its zero-row `claim_stale_targets` service-role preflight fails. Use a new
+if its zero-row `claim_stale_targets` or non-mutating
+`verify_phase_2b_schema` service-role preflight fails. The Phase 2B Worker must
+not deploy before `202609050003_durable_disconnect.sql` is applied. Use a new
 forward migration to repair deployed schema; do not edit history after
 deployment.
 

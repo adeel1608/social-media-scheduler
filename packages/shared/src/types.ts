@@ -113,6 +113,9 @@ export interface PublishResult {
     totalBytes: number;
     chunkSize: number;
   };
+  nextProviderWrite?: {
+    phase: string;
+  };
   sanitizedResponse: Record<string, unknown>;
   error?: { code: string; message: string; retryable: boolean };
 }

@@ -14,6 +14,17 @@ export interface SanitizedConnectedAccount {
     displayName?: string;
     accountType?: string;
   };
+  disconnect_cleanup?: {
+    operationId: string;
+    state:
+      | "prepared"
+      | "revocation_started"
+      | "provider_revoked"
+      | "revocation_uncertain";
+    expiresAt: string;
+    providerRevoked: boolean;
+    revocationUncertain: boolean;
+  };
 }
 
 const platforms = new Set<Platform>(["instagram", "tiktok", "youtube"]);
@@ -59,6 +70,36 @@ export function sanitizeConnectedAccount(
       : {};
   const displayName = boundedText(metadata.displayName, 200);
   const accountType = boundedText(metadata.accountType, 100);
+  const cleanup =
+    record.disconnect_cleanup && typeof record.disconnect_cleanup === "object"
+      ? (record.disconnect_cleanup as Record<string, unknown>)
+      : null;
+  const cleanupState = cleanup?.state;
+  const disconnectCleanup =
+    cleanup &&
+    typeof cleanup.operation_id === "string" &&
+    typeof cleanupState === "string" &&
+    [
+      "prepared",
+      "revocation_started",
+      "provider_revoked",
+      "revocation_uncertain",
+    ].includes(cleanupState) &&
+    typeof cleanup.expires_at === "string"
+      ? {
+          operationId: cleanup.operation_id,
+          state: cleanupState as
+            | "prepared"
+            | "revocation_started"
+            | "provider_revoked"
+            | "revocation_uncertain",
+          expiresAt: cleanup.expires_at,
+          providerRevoked: cleanupState === "provider_revoked",
+          revocationUncertain:
+            cleanupState === "revocation_started" ||
+            cleanupState === "revocation_uncertain",
+        }
+      : undefined;
   return {
     id: record.id,
     platform: record.platform as Platform,
@@ -71,5 +112,6 @@ export function sanitizeConnectedAccount(
       ...(displayName ? { displayName } : {}),
       ...(accountType ? { accountType } : {}),
     },
+    ...(disconnectCleanup ? { disconnect_cleanup: disconnectCleanup } : {}),
   };
 }
