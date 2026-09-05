@@ -3,12 +3,17 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const migrationDirectory = resolve(process.cwd(), "supabase/migrations");
-const sql = readdirSync(migrationDirectory)
+const migrationFiles = readdirSync(migrationDirectory)
   .filter((file) => file.endsWith(".sql"))
-  .sort()
+  .sort();
+const sql = migrationFiles
   .map((file) => readFileSync(resolve(migrationDirectory, file), "utf8"))
   .join("\n")
   .toLowerCase();
+const phase2bPreflightSql = readFileSync(
+  resolve(migrationDirectory, "202609050004_phase_2b_preflight.sql"),
+  "utf8",
+).toLowerCase();
 
 describe("Supabase migrations", () => {
   it("enables RLS on every owner data table", () => {
@@ -68,5 +73,23 @@ describe("Supabase migrations", () => {
     expect(sql).toContain("function public.complete_account_disconnect");
     expect(sql).toContain("account_disconnect_owner_select");
     expect(sql).toContain("connected_accounts_clear_disconnect_on_reconnect");
+  });
+
+  it("authorizes the Phase 2B preflight through database privileges", () => {
+    expect(migrationFiles).toContain("202609050004_phase_2b_preflight.sql");
+    expect(phase2bPreflightSql).toContain(
+      "create or replace function public.verify_phase_2b_schema()",
+    );
+    expect(phase2bPreflightSql).toContain("language sql");
+    expect(phase2bPreflightSql).toContain("stable");
+    expect(phase2bPreflightSql).toContain(
+      "revoke all on function public.verify_phase_2b_schema()",
+    );
+    expect(phase2bPreflightSql).toContain("from public, anon, authenticated");
+    expect(phase2bPreflightSql).toContain(
+      "grant execute on function public.verify_phase_2b_schema()",
+    );
+    expect(phase2bPreflightSql).toContain("to service_role");
+    expect(phase2bPreflightSql).not.toContain("request.jwt.claim.role");
   });
 });

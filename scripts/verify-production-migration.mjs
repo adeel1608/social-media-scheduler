@@ -14,9 +14,13 @@ if (baseUrl.protocol !== "https:") {
 
 const headers = {
   apikey: serviceRoleKey,
-  Authorization: `Bearer ${serviceRoleKey}`,
   "Content-Type": "application/json",
 };
+// Current Supabase secret keys authenticate through `apikey` and are not JWTs.
+// Legacy service-role JWTs still need the bearer header for PostgREST.
+if (!serviceRoleKey.startsWith("sb_secret_")) {
+  headers.Authorization = `Bearer ${serviceRoleKey}`;
+}
 let response;
 try {
   response = await boundedFetch(

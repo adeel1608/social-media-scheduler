@@ -1,6 +1,6 @@
 begin;
 
-select plan(30);
+select plan(33);
 
 select ok(
   to_regprocedure('public.claim_stale_targets(text,integer,integer,integer)') is not null,
@@ -32,6 +32,51 @@ select ok(
     'execute'
   ),
   'anon cannot execute claim_stale_targets'
+);
+
+create temp table phase2b_preflight_snapshot as
+select jsonb_build_object(
+  'connected_accounts', (select count(*) from public.connected_accounts),
+  'disconnect_transactions', (select count(*) from public.account_disconnect_transactions),
+  'post_targets', (select count(*) from public.post_targets),
+  'email_events', (select count(*) from public.email_events)
+) as state;
+
+set local role service_role;
+select is(
+  (public.verify_phase_2b_schema() ->> 'ready')::boolean,
+  true,
+  'service_role can execute the production Phase 2B preflight and receives ready=true'
+);
+reset role;
+
+select is(
+  jsonb_build_object(
+    'connected_accounts', (select count(*) from public.connected_accounts),
+    'disconnect_transactions', (select count(*) from public.account_disconnect_transactions),
+    'post_targets', (select count(*) from public.post_targets),
+    'email_events', (select count(*) from public.email_events)
+  ),
+  (select state from phase2b_preflight_snapshot),
+  'the Phase 2B preflight performs no application-data writes'
+);
+
+select ok(
+  not has_function_privilege(
+    'anon',
+    'public.verify_phase_2b_schema()',
+    'execute'
+  ),
+  'anon cannot execute the Phase 2B preflight'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.verify_phase_2b_schema()',
+    'execute'
+  ),
+  'authenticated cannot execute the Phase 2B preflight'
 );
 
 set local "request.jwt.claim.role" = 'service_role';
@@ -368,12 +413,6 @@ select is(
   ),
   1::bigint,
   'an actual qualifying target transition creates exactly one notification event'
-);
-
-select is(
-  (public.verify_phase_2b_schema() ->> 'ready')::boolean,
-  true,
-  'the non-mutating production Phase 2B schema preflight reports ready'
 );
 
 reset role;
