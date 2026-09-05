@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertProductionConfigured,
   configurationStatus,
+  ownerSetupStatus,
   type Env,
 } from "../src/env";
 
@@ -217,5 +218,38 @@ describe("fail-closed production configuration", () => {
     expect(invalid.invalid).toEqual(
       expect.arrayContaining(["RESEND_FROM", "NOTIFICATION_EMAIL"]),
     );
+  });
+
+  it("returns only browser-safe service readiness from the owner setup endpoint", () => {
+    const status = ownerSetupStatus({
+      ENVIRONMENT: "production",
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_ANON_KEY: "sb_publishable_public-key-sentinel",
+      SUPABASE_SERVICE_ROLE_KEY: "service-role-sentinel",
+      WORKER_PUBLIC_URL: "https://api.postline.dev",
+      UPLOADTHING_TOKEN: "invalid-token",
+      RESEND_API_KEY: "resend-key-sentinel",
+      RESEND_FROM: "Postline <owner@postline.dev>",
+      OWNER_EMAIL: "owner@postline.dev",
+      NOTIFICATION_EMAIL: "owner@postline.dev",
+      META_APP_REVIEW_APPROVED: "false",
+      TIKTOK_CONTENT_POSTING_AUDITED: "false",
+      YOUTUBE_API_AUDIT_APPROVED: "false",
+      LIVE_TEST_CONFIRM: "false",
+    } as Env);
+
+    expect(status.services).toEqual({
+      databaseAuth: true,
+      mediaStorage: false,
+      notifications: true,
+    });
+    const response = JSON.stringify(status);
+    for (const serverOnlyName of [
+      "SUPABASE_SERVICE_ROLE_KEY",
+      "UPLOADTHING_TOKEN",
+      "RESEND_API_KEY",
+    ]) {
+      expect(response).not.toContain(serverOnlyName);
+    }
   });
 });

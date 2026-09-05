@@ -21,7 +21,10 @@ interface AuthContextValue {
   session: Session | null;
   loading: boolean;
   demoMode: boolean;
-  sendMagicLink(email: string): Promise<{ error?: string }>;
+  sendMagicLink(
+    email: string,
+    captchaToken: string,
+  ): Promise<{ error?: string }>;
   signOut(): Promise<void>;
 }
 
@@ -57,14 +60,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       session,
       loading,
       demoMode,
-      async sendMagicLink(email) {
+      async sendMagicLink(email, captchaToken) {
         if (!supabase)
           return {
             error: "Supabase is not configured. Use the setup guide first.",
           };
+        if (!captchaToken.trim()) {
+          return { error: "Complete the security challenge and try again." };
+        }
         const { error } = await supabase.auth.signInWithOtp({
           email,
           options: {
+            captchaToken,
             shouldCreateUser: false,
             emailRedirectTo: `${import.meta.env.VITE_APP_URL ?? window.location.origin}/dashboard`,
           },

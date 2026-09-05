@@ -4,6 +4,7 @@ export interface PublicIdentityEnvironment {
   readonly VITE_API_URL?: string;
   readonly VITE_SUPABASE_URL?: string;
   readonly VITE_SUPABASE_ANON_KEY?: string;
+  readonly VITE_TURNSTILE_SITE_KEY?: string;
   readonly VITE_DEMO_MODE?: string;
   readonly VITE_OPERATOR_NAME?: string;
   readonly VITE_PUBLIC_CONTACT_EMAIL?: string;
@@ -19,6 +20,7 @@ export interface PublicWebConfiguration {
   apiUrl: string;
   supabaseUrl: string;
   supabaseAnonKey: string;
+  turnstileSiteKey: string;
   identity: PublicIdentity;
 }
 
@@ -44,6 +46,7 @@ const PUBLIC_CONFIGURATION_KEYS = [
   "VITE_API_URL",
   "VITE_SUPABASE_URL",
   "VITE_SUPABASE_ANON_KEY",
+  "VITE_TURNSTILE_SITE_KEY",
 ] as const;
 
 export function resolvePublicWebConfiguration(
@@ -59,6 +62,7 @@ export function resolvePublicWebConfiguration(
       apiUrl: env.VITE_API_URL?.trim() || "http://localhost:8787",
       supabaseUrl: env.VITE_SUPABASE_URL?.trim() || "",
       supabaseAnonKey: env.VITE_SUPABASE_ANON_KEY?.trim() || "",
+      turnstileSiteKey: env.VITE_TURNSTILE_SITE_KEY?.trim() || "",
       identity,
     };
   }
@@ -89,7 +93,23 @@ export function resolvePublicWebConfiguration(
     );
   }
 
-  return { appUrl, apiUrl, supabaseUrl, supabaseAnonKey, identity };
+  const turnstileSiteKey = env.VITE_TURNSTILE_SITE_KEY!.trim();
+  if (
+    turnstileSiteKey.length < 20 ||
+    turnstileSiteKey.length > 100 ||
+    /\s/.test(turnstileSiteKey)
+  ) {
+    throw new Error("VITE_TURNSTILE_SITE_KEY must be a valid public site key.");
+  }
+
+  return {
+    appUrl,
+    apiUrl,
+    supabaseUrl,
+    supabaseAnonKey,
+    turnstileSiteKey,
+    identity,
+  };
 }
 
 export function resolvePublicIdentity(

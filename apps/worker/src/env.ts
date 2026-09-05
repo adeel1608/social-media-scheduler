@@ -277,6 +277,29 @@ export function configurationStatus(env: Env) {
   };
 }
 
+export function ownerSetupStatus(env: Env) {
+  const status = configurationStatus(env);
+  const unresolved = new Set<keyof Env>([...status.missing, ...status.invalid]);
+  const ready = (keys: Array<keyof Env>) =>
+    keys.every((key) => !unresolved.has(key));
+
+  return {
+    configured: status.configured,
+    services: {
+      databaseAuth: ready([
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+      ]),
+      mediaStorage: ready(["WORKER_PUBLIC_URL", "UPLOADTHING_TOKEN"]),
+      notifications: ready(["RESEND_API_KEY", "RESEND_FROM"]),
+    },
+    approvals: status.approvals,
+    liveTestSafetyEnabled: status.liveTestSafetyEnabled,
+    environment: status.environment,
+  };
+}
+
 function senderEmailFrom(value: string): string | undefined {
   const trimmed = value.trim();
   const bracketed = trimmed.match(/^[^<>\r\n]{1,100}<([^<>]+)>$/);

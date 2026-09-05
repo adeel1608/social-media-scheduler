@@ -1,6 +1,15 @@
 import type { Platform } from "@scheduler/shared";
 
+import type { Env } from "./env";
+
 type ConnectedAccountRecord = Record<string, unknown>;
+type ApprovalState = "approved" | "pending" | "not_required" | "rejected";
+type ProviderApprovalEnvironment = Pick<
+  Env,
+  | "META_APP_REVIEW_APPROVED"
+  | "TIKTOK_CONTENT_POSTING_AUDITED"
+  | "YOUTUBE_API_AUDIT_APPROVED"
+>;
 
 export interface SanitizedConnectedAccount {
   id: string;
@@ -8,7 +17,10 @@ export interface SanitizedConnectedAccount {
   username: string | null;
   connection_status:
     "connected" | "expired" | "revoked" | "error" | "disconnected";
-  approval_state: "approved" | "pending" | "not_required" | "rejected";
+  /** Effective current state derived from the Worker environment. */
+  approval_state: "approved" | "pending";
+  /** Historical state persisted when the connection was last established. */
+  stored_approval_state: ApprovalState;
   requires_reconnect: boolean;
   metadata: {
     displayName?: string;
@@ -31,7 +43,7 @@ const platforms = new Set<Platform>(["instagram", "tiktok", "youtube"]);
 const connectionStatuses = new Set<
   SanitizedConnectedAccount["connection_status"]
 >(["connected", "expired", "revoked", "error", "disconnected"]);
-const approvalStates = new Set<SanitizedConnectedAccount["approval_state"]>([
+const approvalStates = new Set<ApprovalState>([
   "approved",
   "pending",
   "not_required",
@@ -46,6 +58,7 @@ function boundedText(value: unknown, maximum: number): string | undefined {
 
 export function sanitizeConnectedAccount(
   record: ConnectedAccountRecord,
+  approvalEnvironment: ProviderApprovalEnvironment,
 ): SanitizedConnectedAccount | null {
   if (
     typeof record.id !== "string" ||
@@ -56,14 +69,14 @@ export function sanitizeConnectedAccount(
       record.connection_status as SanitizedConnectedAccount["connection_status"],
     ) ||
     typeof record.approval_state !== "string" ||
-    !approvalStates.has(
-      record.approval_state as SanitizedConnectedAccount["approval_state"],
-    )
+    !approvalStates.has(record.approval_state as ApprovalState)
   ) {
     return null;
   }
   const status =
     record.connection_status as SanitizedConnectedAccount["connection_status"];
+  const platform = record.platform as Platform;
+  const storedApprovalState = record.approval_state as ApprovalState;
   const metadata =
     record.metadata && typeof record.metadata === "object"
       ? (record.metadata as Record<string, unknown>)
@@ -102,11 +115,13 @@ export function sanitizeConnectedAccount(
       : undefined;
   return {
     id: record.id,
-    platform: record.platform as Platform,
+    platform,
     username: boundedText(record.username, 200) ?? null,
     connection_status: status,
-    approval_state:
-      record.approval_state as SanitizedConnectedAccount["approval_state"],
+    approval_state: currentApprovalEnabled(platform, approvalEnvironment)
+      ? "approved"
+      : "pending",
+    stored_approval_state: storedApprovalState,
     requires_reconnect: status !== "connected",
     metadata: {
       ...(displayName ? { displayName } : {}),
@@ -114,4 +129,15 @@ export function sanitizeConnectedAccount(
     },
     ...(disconnectCleanup ? { disconnect_cleanup: disconnectCleanup } : {}),
   };
+}
+
+function currentApprovalEnabled(
+  platform: Platform,
+  environment: ProviderApprovalEnvironment,
+): boolean {
+  return {
+    instagram: environment.META_APP_REVIEW_APPROVED === "true",
+    tiktok: environment.TIKTOK_CONTENT_POSTING_AUDITED === "true",
+    youtube: environment.YOUTUBE_API_AUDIT_APPROVED === "true",
+  }[platform];
 }

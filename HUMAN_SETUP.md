@@ -56,12 +56,31 @@ is sent.
 
 Complete in this order so each provider receives stable policy and deletion URLs:
 
-1. Configure `VITE_OPERATOR_NAME` and `VITE_PUBLIC_CONTACT_EMAIL`, then deploy the UI so `/privacy`, `/terms`, and `/data-deletion` are public.
+1. Configure `VITE_OPERATOR_NAME`, `VITE_PUBLIC_CONTACT_EMAIL`, and Turnstile as
+   described below, then deploy the UI so `/privacy`, `/terms`, and
+   `/data-deletion` are public.
 2. [Instagram / Meta](docs/META_SETUP.md): create the app, add exact callback, request content publishing and insights permissions, connect a professional account, and complete access/review requirements.
 3. [TikTok](docs/TIKTOK_SETUP.md): add Login Kit and Content Posting API, verify the media-delivery domain/prefix, request `video.publish`, and complete the audit. Public posts must stay blocked until it passes.
 4. [YouTube](docs/YOUTUBE_SETUP.md): enable Data and Analytics APIs, configure consent and web client, then complete verification/audit. Unverified-project uploads stay private, so requested public uploads must remain blocked.
 
 ## 7. Configure values without exposing them
+
+Configure Cloudflare Turnstile for the owner login before a non-demo production
+build:
+
+1. In **Cloudflare Dashboard → Turnstile → Add widget**, name the widget for
+   this installation and add only its exact production Pages/custom hostname.
+   Choose the managed widget mode, create it, and copy the public **Site Key**.
+2. In **Supabase Dashboard → Settings → Authentication → Bot and Abuse
+   Protection**, enable CAPTCHA protection, choose **Cloudflare Turnstile**, and
+   paste the Turnstile **Secret Key**. The secret belongs only in Supabase;
+   never put it in GitHub variables, `VITE_` values, source, logs, or chat.
+3. In **GitHub repository → Settings → Environments → production → Environment
+   variables**, create `VITE_TURNSTILE_SITE_KEY` with the public Site Key. This
+   is the only Turnstile value passed to the Pages build.
+
+Demo and Playwright E2E builds remain deterministic without a live challenge.
+Production builds fail closed when the public Site Key is absent or malformed.
 
 Generate a token-encryption key locally:
 
@@ -108,9 +127,13 @@ Never describe mocks or a successful OAuth callback as a live publishing test.
 
 ## 9. Production checks
 
-Run `corepack pnpm check`, `corepack pnpm test:e2e`, `corepack pnpm audit --audit-level high`, and verify `/health`. Confirm backups, the UploadThing 1.8 GiB application cap and 2 GB provider allowance, cron, queue `max_retries=0`, sender configuration and its documented scope, owner allowlist, UploadThing/provider callback URIs, token expiry, audit flags, and log redaction.
+Run `corepack pnpm check`, `corepack pnpm test:e2e`, `corepack pnpm audit --audit-level high`, and verify `/health`. Confirm backups, the UploadThing 1.8 GiB application cap and 2 GB provider allowance, cron, queue `max_retries=5` with `social-scheduler-dead-letter` configured as its dead-letter queue, sender configuration and its documented scope, owner allowlist, UploadThing/provider callback URIs, token expiry, audit flags, and log redaction.
 
 Keep direct Auth signup disabled in the hosted Supabase dashboard, require at
 least 60 seconds between email requests, and review Auth rate limits/CAPTCHA.
 The checked-in local Supabase defaults enforce the same signup and email-spacing
 baseline.
+
+The hosted URL is one owner's private installation, not a public signup or a
+shared Postline service. The GitHub repository is the public Postline
+distribution that other owners clone and configure for themselves.

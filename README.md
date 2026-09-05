@@ -4,6 +4,10 @@ Postline is an open-source, self-hosted scheduler for one owner to prepare, sche
 
 It is not a centrally hosted SaaS. Each person clones and deploys a separate private instance with their own Supabase, Cloudflare, UploadThing, Resend, Meta, TikTok, and Google credentials.
 
+The hosted Postline URL is one owner's private installation, not a public signup
+service. This GitHub repository is the public distribution for other owners to
+clone and configure.
+
 > Status: the application, official-API adapters, migrations, security controls, tests, and deployment configuration are implemented and mock-tested. In Adeel's owner deployment, the public Pages routes and configured Worker are deployed and `/health` was verified healthy on 4 September 2026. Authentication/RLS has not been live-tested end to end, and no social-platform publication has been live-verified. Public posting remains deliberately blocked until the relevant provider approvals and `LIVE_TEST_CONFIRM=true` are configured.
 
 ![Postline analytics dashboard](docs/screenshots/dashboard.png)
@@ -66,10 +70,11 @@ corepack pnpm dev
 
 `.env.example` enables an explicitly labelled local UI demonstration. It cannot contact real platform APIs or report fake publications. Set `VITE_DEMO_MODE=false` and configure Supabase and the Worker for an authenticated integration environment.
 
-Production builds also require the browser-safe `VITE_OPERATOR_NAME` and
-`VITE_PUBLIC_CONTACT_EMAIL` values used on the public legal pages. Missing or
-placeholder values fail the build when demo mode is off. Never put a server
-secret in any `VITE_` variable.
+Production builds also require the browser-safe `VITE_OPERATOR_NAME`,
+`VITE_PUBLIC_CONTACT_EMAIL`, and Cloudflare Turnstile public
+`VITE_TURNSTILE_SITE_KEY` values. Missing, malformed, or placeholder values fail
+the build when demo mode is off. The Turnstile secret key belongs only in
+Supabase; never put any server secret in a `VITE_` variable.
 
 Run the Worker separately:
 

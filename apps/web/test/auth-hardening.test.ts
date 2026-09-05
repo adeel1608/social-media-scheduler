@@ -10,6 +10,7 @@ const authContext = readFileSync(
 describe("browser Auth hardening", () => {
   it("never creates a user during magic-link sign-in", () => {
     expect(authContext).toMatch(/shouldCreateUser:\s*false/);
+    expect(authContext).toMatch(/captchaToken,/);
     expect(authContext).not.toMatch(/\.auth\.signUp\s*\(/);
   });
 

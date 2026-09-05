@@ -14,8 +14,11 @@ import { apiRequest } from "../lib/api";
 
 interface SetupStatus {
   configured: boolean;
-  missing: string[];
-  invalid?: string[];
+  services: {
+    databaseAuth: boolean;
+    mediaStorage: boolean;
+    notifications: boolean;
+  };
   approvals: Record<"instagram" | "tiktok" | "youtube", boolean>;
   liveTestSafetyEnabled: boolean;
   environment: string;
@@ -28,7 +31,11 @@ interface ConnectedAccount {
 
 const demoStatus: SetupStatus = {
   configured: false,
-  missing: ["RESEND_API_KEY", "TIKTOK_CLIENT_SECRET"],
+  services: {
+    databaseAuth: true,
+    mediaStorage: true,
+    notifications: false,
+  },
   approvals: { instagram: true, tiktok: false, youtube: false },
   liveTestSafetyEnabled: false,
   environment: "local demonstration",
@@ -74,40 +81,28 @@ export function SetupPage() {
         account.platform === platform &&
         account.connection_status === "connected",
     );
-  const missing = status?.missing ?? [];
-  const hasKeys = (...names: string[]) =>
-    Boolean(status) && names.every((name) => !missing.includes(name));
-
   const steps = useMemo(
     () => [
       {
         title: "Supabase database & auth",
-        detail: hasKeys(
-          "SUPABASE_URL",
-          "SUPABASE_ANON_KEY",
-          "SUPABASE_SERVICE_ROLE_KEY",
-        )
+        detail: status?.services.databaseAuth
           ? "Keys present · verify migrations and owner allowlist"
           : "Project URL or API keys still required",
-        ready: hasKeys(
-          "SUPABASE_URL",
-          "SUPABASE_ANON_KEY",
-          "SUPABASE_SERVICE_ROLE_KEY",
-        ),
+        ready: Boolean(status?.services.databaseAuth),
       },
       {
         title: "Cloudflare Worker, Queue & UploadThing",
-        detail: hasKeys("WORKER_PUBLIC_URL", "UPLOADTHING_TOKEN")
+        detail: status?.services.mediaStorage
           ? "Worker URL and UploadThing server token are present"
           : "Worker URL or UploadThing server token still required",
-        ready: hasKeys("WORKER_PUBLIC_URL", "UPLOADTHING_TOKEN"),
+        ready: Boolean(status?.services.mediaStorage),
       },
       {
         title: "Resend failure notifications",
-        detail: hasKeys("RESEND_API_KEY", "RESEND_FROM")
+        detail: status?.services.notifications
           ? "Credentials present · verify sender eligibility and recipient scope"
           : "API key and an eligible sender are still required",
-        ready: hasKeys("RESEND_API_KEY", "RESEND_FROM"),
+        ready: Boolean(status?.services.notifications),
       },
       {
         title: "Instagram professional account",
@@ -211,9 +206,9 @@ export function SetupPage() {
           <div>
             <h3>Configuration doctor</h3>
             <p>
-              {missing.length
-                ? `${missing.length} required setting${missing.length === 1 ? " is" : "s are"} missing. Run the doctor for names and format checks.`
-                : "Required settings are present. Run the doctor for format and connectivity checks."}
+              {status?.configured
+                ? "Required settings are present. Run the doctor for format and connectivity checks."
+                : "One or more required settings need attention. Run the doctor locally for names and format checks."}
             </p>
             <code>corepack pnpm setup-doctor</code>
           </div>

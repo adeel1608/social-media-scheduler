@@ -58,6 +58,11 @@ describe("production deployment safety", () => {
       ["VITE_SUPABASE_ANON_KEY", "SUPABASE_ANON_KEY"],
       ["VITE_SUPABASE_ANON_KEY", "SUPABASE_ANON_KEY"],
     ]);
+    expect(workflow.match(/VITE_TURNSTILE_SITE_KEY:/g)).toHaveLength(2);
+    expect(workflow).toContain(
+      "VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}",
+    );
+    expect(workflow).not.toMatch(/VITE_TURNSTILE_SITE_KEY: \$\{\{ secrets\./);
   });
 
   it("pins executable actions to immutable commit SHAs", () => {

@@ -9,6 +9,7 @@ describe("Cloudflare Pages security headers", () => {
       apiUrl: "https://postline-api.workers.dev",
       supabaseUrl: "https://project.supabase.co",
       supabaseAnonKey: "public-key-not-rendered",
+      turnstileSiteKey: "1x00000000000000000000AA",
       identity: {
         operatorName: "Postline",
         contactEmail: "owner@postline.dev",
@@ -20,6 +21,14 @@ describe("Cloudflare Pages security headers", () => {
     );
     expect(headers).not.toMatch(/connect-src[^;\n]*\shttps:(?:\s|;)/);
     expect(headers).not.toContain("public-key-not-rendered");
+    const directives = contentSecurityPolicyDirectives(headers);
+    expect(directives.get("script-src")).toEqual([
+      "'self'",
+      "https://challenges.cloudflare.com",
+    ]);
+    expect(directives.get("frame-src")).toEqual([
+      "https://challenges.cloudflare.com",
+    ]);
     expect(headers).toContain("frame-ancestors 'none'");
   });
 
@@ -29,6 +38,7 @@ describe("Cloudflare Pages security headers", () => {
       apiUrl: "https://services.example.dev",
       supabaseUrl: "https://services.example.dev",
       supabaseAnonKey: "public-key-not-rendered",
+      turnstileSiteKey: "1x00000000000000000000AA",
       identity: {
         operatorName: "Postline",
         contactEmail: "owner@postline.dev",
@@ -38,3 +48,14 @@ describe("Cloudflare Pages security headers", () => {
     expect(headers.match(/https:\/\/services\.example\.dev/g)).toHaveLength(1);
   });
 });
+
+function contentSecurityPolicyDirectives(headers: string) {
+  const policy = headers.match(/Content-Security-Policy: ([^\r\n]+)/)?.[1];
+  if (!policy) throw new Error("Content-Security-Policy header is missing");
+  return new Map(
+    policy.split(";").map((directive) => {
+      const [name, ...sources] = directive.trim().split(/\s+/);
+      return [name, sources] as const;
+    }),
+  );
+}

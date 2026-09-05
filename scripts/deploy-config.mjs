@@ -7,6 +7,7 @@ const REQUIRED_DEPLOY_VALUES = [
   "VITE_API_URL",
   "VITE_SUPABASE_URL",
   "VITE_SUPABASE_ANON_KEY",
+  "VITE_TURNSTILE_SITE_KEY",
   "VITE_OPERATOR_NAME",
   "VITE_PUBLIC_CONTACT_EMAIL",
   "GITHUB_REF_NAME",
@@ -69,6 +70,15 @@ export function validateDeployConfiguration(environment) {
     (anonKey.length < 20 || anonKey.length > 4096 || /\s/.test(anonKey))
   ) {
     errors.push("VITE_SUPABASE_ANON_KEY is malformed");
+  }
+  const turnstileSiteKey = normalized(environment.VITE_TURNSTILE_SITE_KEY);
+  if (
+    turnstileSiteKey &&
+    (turnstileSiteKey.length < 20 ||
+      turnstileSiteKey.length > 100 ||
+      /\s/.test(turnstileSiteKey))
+  ) {
+    errors.push("VITE_TURNSTILE_SITE_KEY is malformed");
   }
   const apiToken = normalized(environment.CLOUDFLARE_API_TOKEN);
   if (apiToken && (apiToken.length < 20 || /\s/.test(apiToken))) {
