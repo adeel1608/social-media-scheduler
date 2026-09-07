@@ -144,6 +144,7 @@ select ok((select consumed_at is not null from public.oauth_states where state_h
 select is((select status::text from public.post_targets where id='70000000-0000-4000-8000-000000000042'), 'blocked_authorization', 'revocation invalidates queued reviewer work');
 select is(public.current_meta_review_authorization('70000000-0000-4000-8000-000000000002','review-security@example.test'), null::jsonb, 'revoked authorization cannot resolve');
 update security_generation set generation=public.set_meta_review_authorization('70000000-0000-4000-8000-000000000002','review-security@example.test',true,now()+interval '1 hour');
+reset role;
 update auth.users set banned_until=now()+interval '1 hour' where id='70000000-0000-4000-8000-000000000002';
 select is((select enabled from public.meta_review_authorization), false, 'Auth ban authoritatively revokes the grant');
 select is(public.current_meta_review_authorization('70000000-0000-4000-8000-000000000002','review-security@example.test'), null::jsonb, 'banned reviewer cannot resolve authorization');
