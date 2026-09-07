@@ -58,7 +58,8 @@ async function json(
     response.ok,
     `local request ${path} failed with ${response.status}`,
   ).toBe(true);
-  return response.status === 204 ? null : response.json();
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
 }
 async function createUser(id: string, email: string) {
   await json("/auth/v1/admin/users", {
