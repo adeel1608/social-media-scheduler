@@ -47,6 +47,7 @@ function dependencies(
       authenticated: true,
       jwt: "owner-jwt",
       user: { id: "owner-id", email: "owner@example.com" },
+      accessRole: "owner",
     }),
     consumeRateLimit: vi.fn().mockResolvedValue(true),
     reserve: vi.fn().mockResolvedValue(mediaId),
@@ -93,6 +94,39 @@ describe("UploadThing initiation", () => {
     expect(result.ownerId).toBe("owner-id");
     expect(result.mediaId).toBe(mediaId);
     expect(deps.reserve).toHaveBeenCalledOnce();
+  });
+
+  it("binds a reviewer reservation to the authenticated reviewer identity", async () => {
+    const deps = dependencies({
+      authenticate: vi.fn().mockResolvedValue({
+        authenticated: true,
+        jwt: "reviewer-jwt",
+        user: {
+          id: "reviewer-id",
+          email: "reviewer@example.com",
+        },
+        accessRole: "meta_reviewer",
+      }),
+    });
+    const result = await authorizeUploadInitiation(
+      env(),
+      new Request("https://worker.example.test/api/uploadthing", {
+        headers: { Authorization: "Bearer reviewer-jwt" },
+      }),
+      [{ name: "clip.mp4", type: "video/mp4", size: 1_024 }],
+      input(),
+      deps,
+    );
+
+    expect(result.ownerId).toBe("reviewer-id");
+    expect(deps.reserve).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        accessRole: "meta_reviewer",
+        user: expect.objectContaining({ id: "reviewer-id" }),
+      }),
+      input(),
+    );
   });
 
   it("rejects a single file larger than the 1.8 GiB application cap", async () => {

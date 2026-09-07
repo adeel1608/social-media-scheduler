@@ -8,7 +8,10 @@ import {
 
 import { createMediaUploadSchema, validateMedia } from "@scheduler/shared";
 
-import { authenticateOwnerRequest } from "./auth";
+import {
+  authenticateWorkspaceRequest,
+  type WorkspaceAuthentication,
+} from "./auth";
 import { ownerDatabase, SupabaseRest } from "./database";
 import type { Env } from "./env";
 import {
@@ -47,9 +50,16 @@ export interface UploadThingRouteDependencies {
   authenticate(
     env: Env,
     request: Request,
-  ): ReturnType<typeof authenticateOwnerRequest>;
-  consumeRateLimit(env: Env, jwt: string): Promise<boolean>;
-  reserve(env: Env, jwt: string, input: UploadInput): Promise<string>;
+  ): ReturnType<typeof authenticateWorkspaceRequest>;
+  consumeRateLimit(
+    env: Env,
+    authentication: Extract<WorkspaceAuthentication, { authenticated: true }>,
+  ): Promise<boolean>;
+  reserve(
+    env: Env,
+    authentication: Extract<WorkspaceAuthentication, { authenticated: true }>,
+    input: UploadInput,
+  ): Promise<string>;
   finalize(
     env: Env,
     input: {
@@ -66,22 +76,41 @@ export interface UploadThingRouteDependencies {
 }
 
 const defaultDependencies: UploadThingRouteDependencies = {
-  authenticate: authenticateOwnerRequest,
-  consumeRateLimit: (env, jwt) =>
-    ownerDatabase(env, jwt).rpc<boolean>("consume_rate_limit", {
-      p_route: "upload_start",
-      p_limit: 30,
-      p_window_seconds: 60,
-    }),
-  async reserve(env, jwt, input) {
-    return ownerDatabase(env, jwt).rpc<string>("reserve_uploadthing_media", {
+  authenticate: authenticateWorkspaceRequest,
+  consumeRateLimit: (env, authentication) =>
+    authentication.accessRole === "owner"
+      ? ownerDatabase(env, authentication.jwt).rpc<boolean>(
+          "consume_rate_limit",
+          {
+            p_route: "upload_start",
+            p_limit: 30,
+            p_window_seconds: 60,
+          },
+        )
+      : new SupabaseRest(env).rpc<boolean>("consume_meta_review_rate_limit", {
+          p_reviewer_id: authentication.user.id,
+          p_route: "upload_start",
+          p_limit: 30,
+          p_window_seconds: 60,
+        }),
+  async reserve(env, authentication, input) {
+    const parameters = {
       p_original_filename: input.filename,
       p_mime_type: input.mimeType,
       p_size_bytes: input.sizeBytes,
       p_width: input.width ?? null,
       p_height: input.height ?? null,
       p_duration_seconds: input.durationSeconds ?? null,
-    });
+    };
+    return authentication.accessRole === "owner"
+      ? ownerDatabase(env, authentication.jwt).rpc<string>(
+          "reserve_uploadthing_media",
+          parameters,
+        )
+      : new SupabaseRest(env).rpc<string>("reserve_meta_review_media", {
+          p_reviewer_id: authentication.user.id,
+          ...parameters,
+        });
   },
   async finalize(env, input) {
     return new SupabaseRest(env).rpc<string>("complete_uploadthing_media", {
@@ -108,7 +137,7 @@ export async function authorizeUploadInitiation(
   if (!authentication.authenticated) {
     throw new UploadThingError({
       code: "FORBIDDEN",
-      message: "Owner authentication is required to upload media.",
+      message: "Workspace authentication is required to upload media.",
     });
   }
   if (files.length !== 1) {
@@ -147,7 +176,7 @@ export async function authorizeUploadInitiation(
       message: "This file exceeds Postline's 1.8 GiB active-media safety cap.",
     });
   }
-  const allowed = await dependencies.consumeRateLimit(env, authentication.jwt);
+  const allowed = await dependencies.consumeRateLimit(env, authentication);
   if (!allowed) {
     throw new UploadThingError({
       code: "TOO_MANY_FILES",
@@ -156,7 +185,7 @@ export async function authorizeUploadInitiation(
   }
   let mediaId: string;
   try {
-    mediaId = await dependencies.reserve(env, authentication.jwt, input);
+    mediaId = await dependencies.reserve(env, authentication, input);
   } catch (error) {
     const safeBody =
       typeof error === "object" && error && "body" in error

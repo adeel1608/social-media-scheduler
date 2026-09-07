@@ -16,6 +16,56 @@ const video = {
 };
 
 describe("official API adapters", () => {
+  it("keeps the temporary Meta review gate separate from approval", async () => {
+    const blockedFetch = vi.fn<typeof fetch>();
+    const blocked = new InstagramAdapter(
+      {
+        appId: "app",
+        appSecret: "secret",
+        reviewApproved: false,
+        reviewTestingAuthorized: false,
+      },
+      blockedFetch,
+    );
+    const reviewFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ id: "review-container" }), {
+        status: 200,
+      }),
+    );
+    const review = new InstagramAdapter(
+      {
+        appId: "app",
+        appSecret: "secret",
+        reviewApproved: false,
+        reviewTestingAuthorized: true,
+      },
+      reviewFetch,
+    );
+    const input = {
+      accountId: "review-instagram",
+      accessToken: "test-token",
+      idempotencyKey: "review-only-key",
+      metadata: { caption: "Review", contentType: "feed_image" as const },
+      media: [image],
+      deliveryUrls: ["https://media.example.test/review.jpg"],
+    };
+
+    await expect(blocked.publish(input)).resolves.toMatchObject({
+      outcome: "failed",
+      sanitizedResponse: { blocked: "meta_app_review_pending" },
+    });
+    expect(blockedFetch).not.toHaveBeenCalled();
+    expect(blocked.getCapabilities().supportsDirectPublicPublishing).toBe(
+      false,
+    );
+
+    await expect(review.publish(input)).resolves.toMatchObject({
+      outcome: "processing",
+    });
+    expect(reviewFetch).toHaveBeenCalledOnce();
+    expect(review.getCapabilities().supportsDirectPublicPublishing).toBe(true);
+  });
+
   it("uses Meta's container then media_publish workflow", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

@@ -1,6 +1,6 @@
 begin;
 
-select plan(33);
+select plan(48);
 
 select ok(
   to_regprocedure('public.claim_stale_targets(text,integer,integer,integer)') is not null,
@@ -416,6 +416,188 @@ select is(
 );
 
 reset role;
+
+select is(
+  (
+    select count(*)
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ('oauth_states', 'connected_accounts', 'post_targets')
+      and column_name = 'authorization_context'
+  ),
+  3::bigint,
+  'Meta review authorization context is durable on OAuth, accounts, and targets'
+);
+
+set local role service_role;
+select is(
+  (public.verify_meta_review_schema() ->> 'ready')::boolean,
+  true,
+  'service_role can execute the non-mutating Meta review schema preflight'
+);
+reset role;
+
+select ok(
+  not has_function_privilege('anon', 'public.verify_meta_review_schema()', 'execute'),
+  'anon cannot execute the Meta review schema preflight'
+);
+select ok(
+  not has_function_privilege('authenticated', 'public.verify_meta_review_schema()', 'execute'),
+  'authenticated cannot execute the Meta review schema preflight'
+);
+select ok(
+  has_function_privilege(
+    'service_role',
+    'public.create_meta_review_post(uuid,text,text,timestamp with time zone,uuid[],uuid,uuid[],jsonb)',
+    'execute'
+  ),
+  'service_role can execute the isolated Meta review post transaction'
+);
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.create_meta_review_post(uuid,text,text,timestamp with time zone,uuid[],uuid,uuid[],jsonb)',
+    'execute'
+  ),
+  'authenticated users cannot execute the Meta review post transaction'
+);
+select ok(
+  has_function_privilege(
+    'service_role',
+    'public.reserve_meta_review_media(uuid,text,text,bigint,integer,integer,numeric)',
+    'execute'
+  ),
+  'service_role can reserve reviewer media'
+);
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.reserve_meta_review_media(uuid,text,text,bigint,integer,integer,numeric)',
+    'execute'
+  ),
+  'authenticated users cannot reserve reviewer media directly'
+);
+
+insert into auth.users (id, email)
+values ('ffffffff-ffff-4fff-8fff-ffffffffffff', 'meta-reviewer@example.test');
+
+insert into public.connected_accounts (
+  id, owner_id, platform, remote_account_id, encrypted_access_token,
+  access_token_nonce, encryption_key_version, approval_state,
+  authorization_context
+) values (
+  '12121212-1212-4212-8212-121212121212',
+  'ffffffff-ffff-4fff-8fff-ffffffffffff',
+  'instagram', 'meta-review-account', 'review-ciphertext', 'review-nonce',
+  'v1', 'pending', 'meta_review'
+);
+
+insert into public.media_assets (
+  id, owner_id, object_key, original_filename, mime_type, size_bytes,
+  upload_status, storage_provider, provider_file_key, provider_url
+) values (
+  '13131313-1313-4313-8313-131313131313',
+  'ffffffff-ffff-4fff-8fff-ffffffffffff',
+  'meta-review-media-key', 'review.jpg', 'image/jpeg', 1024,
+  'complete', 'uploadthing', 'meta-review-media-key',
+  'https://meta-review.ufs.sh/f/meta-review-media-key'
+);
+
+create temp table meta_review_created_post (id uuid);
+grant select, insert on table meta_review_created_post to service_role;
+set local role service_role;
+insert into meta_review_created_post (id)
+select public.create_meta_review_post(
+  'ffffffff-ffff-4fff-8fff-ffffffffffff',
+  'Meta review post',
+  'Meta review caption',
+  now() + interval '5 minutes',
+  array['13131313-1313-4313-8313-131313131313'::uuid],
+  '12121212-1212-4212-8212-121212121212',
+  array['13131313-1313-4313-8313-131313131313'::uuid],
+  '{"caption":"Meta review caption","contentType":"feed_image"}'::jsonb
+);
+reset role;
+
+select is(
+  (select owner_id from public.posts where id = (select id from meta_review_created_post)),
+  'ffffffff-ffff-4fff-8fff-ffffffffffff'::uuid,
+  'Meta review post belongs only to the reviewer Auth user'
+);
+select is(
+  (
+    select authorization_context
+    from public.post_targets
+    where post_id = (select id from meta_review_created_post)
+  ),
+  'meta_review',
+  'Meta review target carries the durable review marker'
+);
+select is(
+  (
+    select connected_account_id
+    from public.post_targets
+    where post_id = (select id from meta_review_created_post)
+  ),
+  '12121212-1212-4212-8212-121212121212'::uuid,
+  'Meta review target uses only the reviewer-owned Instagram account'
+);
+
+set local role service_role;
+select throws_ok(
+  $$select public.create_meta_review_post(
+    'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    'Cross-owner attempt',
+    'Caption',
+    now() + interval '5 minutes',
+    array['13131313-1313-4313-8313-131313131313'::uuid],
+    'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    array['13131313-1313-4313-8313-131313131313'::uuid],
+    '{"caption":"Caption","contentType":"feed_image"}'::jsonb
+  )$$,
+  '42501',
+  'Instagram account does not belong to reviewer',
+  'Meta review post transaction rejects a guessed owner account ID'
+);
+reset role;
+
+set local "request.jwt.claims" =
+  '{"sub":"ffffffff-ffff-4fff-8fff-ffffffffffff","email":"meta-reviewer@example.test"}';
+set local role authenticated;
+select is(
+  (
+    select count(*)
+    from public.post_targets
+    where owner_id = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+  ),
+  0::bigint,
+  'reviewer JWT receives no direct operational-table RLS access'
+);
+select throws_ok(
+  $$select public.reserve_uploadthing_media(
+    'direct-bypass.jpg', 'image/jpeg', 1,
+    null::integer, null::integer, null::numeric
+  )$$,
+  '42501',
+  'Owner authorization required',
+  'reviewer JWT cannot enter the owner-only upload RPC'
+);
+reset role;
+
+set local role service_role;
+update public.post_targets
+set status = 'failed'
+where post_id = (select id from meta_review_created_post);
+reset role;
+select is(
+  (
+    select count(*)
+    from public.email_events
+    where owner_id = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+  ),
+  0::bigint,
+  'reviewer target failures never enqueue owner notification email'
+);
 
 select * from finish();
 rollback;

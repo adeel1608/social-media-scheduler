@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
     demoMode: false,
     loading: false,
     session: null as Session | null,
+    accessRole: "owner" as "owner" | "meta_reviewer",
   },
   apiRequest: vi.fn(),
 }));
@@ -56,6 +57,7 @@ function account(
 beforeEach(() => {
   mocks.auth.demoMode = false;
   mocks.auth.session = session;
+  mocks.auth.accessRole = "owner";
   mocks.apiRequest.mockReset();
   window.history.replaceState({}, "", "/accounts");
 });
@@ -103,6 +105,30 @@ describe("authoritative Connected Accounts UI", () => {
       expect(screen.getAllByText("No server account found")).toHaveLength(3),
     );
     expect(screen.getByRole("button", { name: "Connect TikTok" })).toBeTruthy();
+  });
+
+  it("shows only the reviewer-owned Instagram workspace in reviewer mode", async () => {
+    mocks.auth.accessRole = "meta_reviewer";
+    mocks.apiRequest.mockResolvedValue({
+      data: [
+        account("instagram", {
+          review_testing_authorized: true,
+          metadata: { displayName: "Meta Review Account" },
+        }),
+      ],
+    });
+    render(<AccountsPage />);
+
+    expect(await screen.findByText("Meta Review Account")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Temporary Meta review testing is enabled for this workspace",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect TikTok" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Connect YouTube" }),
+    ).toBeNull();
   });
 
   it("renders TikTok connected only when the server reports it", async () => {

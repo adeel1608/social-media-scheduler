@@ -11,8 +11,16 @@ import { useAuth } from "../context/AuthContext";
 const repositoryUrl = "https://github.com/adeel1608/social-media-scheduler";
 
 export function LoginPage() {
-  const { sendMagicLink, session, demoMode } = useAuth();
+  const { sendMagicLink, signInMetaReviewer, session, demoMode, accessRole } =
+    useAuth();
+  const reviewRequested =
+    new URLSearchParams(
+      typeof window === "undefined" ? "" : window.location.search,
+    ).get("review") === "meta";
+  const reviewEnabled = import.meta.env.VITE_META_REVIEW_MODE === "true";
+  const reviewerLogin = reviewRequested && reviewEnabled;
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [messageIsError, setMessageIsError] = useState(false);
   const [sending, setSending] = useState(false);
@@ -23,29 +31,45 @@ export function LoginPage() {
   const updateCaptchaToken = useCallback((token: string) => {
     setCaptchaToken(token);
   }, []);
-  if (session || demoMode) return <Navigate to="/analytics" replace />;
+  if (session || demoMode)
+    return (
+      <Navigate
+        to={accessRole === "meta_reviewer" ? "/accounts" : "/analytics"}
+        replace
+      />
+    );
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!captchaToken) {
       setMessageIsError(true);
       setMessage(
-        "Complete the security challenge before requesting a sign-in link.",
+        reviewerLogin
+          ? "Complete the security challenge before signing in."
+          : "Complete the security challenge before requesting a sign-in link.",
       );
       return;
     }
     setSending(true);
     setMessage("");
     try {
-      const result = await sendMagicLink(email, captchaToken);
+      const result = reviewerLogin
+        ? await signInMetaReviewer(email, password, captchaToken)
+        : await sendMagicLink(email, captchaToken);
       setMessageIsError(Boolean(result.error));
       setMessage(
         result.error ??
-          "Check your inbox. Your secure sign-in link is on its way.",
+          (reviewerLogin
+            ? "Reviewer sign-in verified."
+            : "Check your inbox. Your secure sign-in link is on its way."),
       );
     } catch {
       setMessageIsError(true);
-      setMessage("The sign-in link could not be sent. Please try again later.");
+      setMessage(
+        reviewerLogin
+          ? "The email or password could not be verified."
+          : "The sign-in link could not be sent. Please try again later.",
+      );
     } finally {
       turnstileReference.current?.reset();
       setCaptchaToken("");
@@ -94,12 +118,21 @@ export function LoginPage() {
           <div className="login-icon">
             <LockKeyhole size={22} />
           </div>
-          <p className="eyebrow">OWNER ACCESS</p>
-          <h2>Welcome back</h2>
-          <p className="muted" id="login-help">
-            Enter the owner email configured for this installation. No password
-            needed.
+          <p className="eyebrow">
+            {reviewerLogin ? "META REVIEWER ACCESS" : "OWNER ACCESS"}
           </p>
+          <h2>{reviewerLogin ? "Review Postline" : "Welcome back"}</h2>
+          <p className="muted" id="login-help">
+            {reviewerLogin
+              ? "Use the temporary credentials supplied privately with the Meta App Review submission."
+              : "Enter the owner email configured for this installation. No password needed."}
+          </p>
+          {reviewRequested && !reviewEnabled && (
+            <div className="form-message form-message-error" role="alert">
+              Meta reviewer access is not enabled for this installation.{" "}
+              <a href="/login">Return to owner sign-in</a>.
+            </div>
+          )}
           <form onSubmit={(event) => void submit(event)}>
             <label htmlFor="email">Email address</label>
             <input
@@ -112,18 +145,46 @@ export function LoginPage() {
               autoComplete="email"
               aria-describedby="login-help"
             />
+            {reviewerLogin && (
+              <>
+                <label htmlFor="password">Temporary password</label>
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                  minLength={12}
+                  autoComplete="current-password"
+                  aria-describedby="login-help"
+                />
+              </>
+            )}
             <TurnstileWidget
               ref={turnstileReference}
               siteKey={turnstileSiteKey}
               onTokenChange={updateCaptchaToken}
+              action={reviewerLogin ? "meta_reviewer_login" : "owner_login"}
+              purpose={reviewerLogin ? "reviewer" : "owner"}
             />
             <button
               className="primary-button full"
               type="submit"
-              disabled={sending || !captchaToken || !turnstileSiteKey}
+              disabled={
+                sending ||
+                !captchaToken ||
+                !turnstileSiteKey ||
+                (reviewRequested && !reviewEnabled)
+              }
               aria-busy={sending}
             >
-              {sending ? "Sending link…" : "Send magic link"}
+              {sending
+                ? reviewerLogin
+                  ? "Signing in…"
+                  : "Sending link…"
+                : reviewerLogin
+                  ? "Sign in for Meta review"
+                  : "Send magic link"}
               <ArrowRight size={17} />
             </button>
           </form>
@@ -136,11 +197,26 @@ export function LoginPage() {
             </div>
           )}
           <p className="login-note">
-            This hosted URL is one owner&apos;s private installation. For your
-            own installation, use the public{" "}
-            <a href={repositoryUrl}>Postline repository</a>. Other authenticated
-            email addresses are denied by server and database policies.
+            {reviewerLogin ? (
+              <>
+                This temporary account can access only its own Instagram review
+                workspace. Public registration remains disabled.
+              </>
+            ) : (
+              <>
+                This hosted URL is one owner&apos;s private installation. For
+                your own installation, use the public{" "}
+                <a href={repositoryUrl}>Postline repository</a>. Other
+                authenticated email addresses are denied by server and database
+                policies.
+              </>
+            )}
           </p>
+          {!reviewerLogin && reviewEnabled && (
+            <p className="login-note">
+              <a href="/login?review=meta">Meta App Review sign-in</a>
+            </p>
+          )}
           <div className="legal-links">
             <a href="/privacy">Privacy</a>
             <a href="/terms">Terms</a>

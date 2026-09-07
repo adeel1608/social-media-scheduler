@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import { AppShell } from "./components/AppShell";
 import { useAuth } from "./context/AuthContext";
@@ -58,7 +58,8 @@ const SetupPage = lazy(() =>
 );
 
 function ProtectedApp() {
-  const { session, demoMode, loading } = useAuth();
+  const { session, demoMode, loading, accessRole } = useAuth();
+  const location = useLocation();
   if (loading)
     return (
       <div className="app-loader">
@@ -67,7 +68,33 @@ function ProtectedApp() {
       </div>
     );
   if (!session && !demoMode) return <Navigate to="/login" replace />;
+  if (
+    accessRole === "meta_reviewer" &&
+    ![
+      "/accounts",
+      "/composer",
+      "/queue",
+      "/calendar",
+      "/history",
+      "/analytics",
+    ].some(
+      (path) =>
+        location.pathname === path || location.pathname.startsWith(`${path}/`),
+    )
+  ) {
+    return <Navigate to="/accounts" replace />;
+  }
   return <AppShell />;
+}
+
+function WorkspaceIndex() {
+  const { accessRole } = useAuth();
+  return (
+    <Navigate
+      to={accessRole === "meta_reviewer" ? "/accounts" : "/analytics"}
+      replace
+    />
+  );
 }
 
 export default function App() {
@@ -88,7 +115,7 @@ export default function App() {
         <Route path="/terms" element={<LegalPage type="terms" />} />
         <Route path="/data-deletion" element={<LegalPage type="deletion" />} />
         <Route element={<ProtectedApp />}>
-          <Route index element={<Navigate to="/analytics" replace />} />
+          <Route index element={<WorkspaceIndex />} />
           <Route path="/setup" element={<SetupPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/analytics/:targetId" element={<PostAnalyticsPage />} />

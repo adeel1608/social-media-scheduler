@@ -39,6 +39,7 @@ describe("fail-closed production configuration", () => {
         "https://api.postline.dev/api/oauth/instagram/callback",
       META_GRAPH_VERSION: "v23.0",
       META_APP_REVIEW_APPROVED: "false",
+      META_REVIEW_MODE: "false",
       TIKTOK_CLIENT_KEY: "tiktok-client-key",
       TIKTOK_CLIENT_SECRET: "tiktok-secret",
       TIKTOK_REDIRECT_URI: "https://api.postline.dev/api/oauth/tiktok/callback",
@@ -77,6 +78,31 @@ describe("fail-closed production configuration", () => {
     expect(() =>
       assertProductionConfigured({ ...env, ENVIRONMENT: "staging" }),
     ).toThrow("Production configuration incomplete");
+  });
+
+  it("keeps Meta review disabled by default and fails closed on inconsistent identity", () => {
+    expect(
+      configurationStatus({
+        META_REVIEW_MODE: "false",
+        OWNER_EMAIL: "owner@postline.dev",
+      } as Env).invalid,
+    ).toEqual([]);
+
+    const enabledWithoutIdentity = configurationStatus({
+      META_REVIEW_MODE: "true",
+      OWNER_EMAIL: "owner@postline.dev",
+    } as Env);
+    expect(enabledWithoutIdentity.missing).toEqual(
+      expect.arrayContaining(["META_REVIEWER_EMAIL", "META_REVIEWER_USER_ID"]),
+    );
+
+    const ownerReuse = configurationStatus({
+      META_REVIEW_MODE: "true",
+      OWNER_EMAIL: "owner@postline.dev",
+      META_REVIEWER_EMAIL: "owner@postline.dev",
+      META_REVIEWER_USER_ID: "22222222-2222-4222-8222-222222222222",
+    } as Env);
+    expect(ownerReuse.invalid).toContain("META_REVIEWER_EMAIL");
   });
 
   it("rejects malformed encryption keys and non-HTTPS production origins", () => {

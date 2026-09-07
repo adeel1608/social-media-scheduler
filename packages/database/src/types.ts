@@ -19,6 +19,7 @@ export interface Database {
           id: string;
           owner_id: string;
           platform: Platform;
+          authorization_context: "owner" | "meta_review";
           remote_account_id: string;
           username: string | null;
           encrypted_access_token: string;
@@ -97,6 +98,7 @@ export interface Database {
           post_id: string;
           connected_account_id: string | null;
           platform: Platform;
+          authorization_context: "owner" | "meta_review";
           status: TargetStatus;
           metadata: Record<string, unknown>;
           selected_media_ids: string[];

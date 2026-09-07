@@ -24,6 +24,7 @@ export interface InstagramConfig {
   appSecret: string;
   graphVersion?: string;
   reviewApproved: boolean;
+  reviewTestingAuthorized?: boolean;
 }
 
 interface InstagramPublishState {
@@ -252,7 +253,9 @@ export class InstagramAdapter implements PlatformAdapter {
         "story_image",
         "story_video",
       ],
-      supportsDirectPublicPublishing: this.config.reviewApproved,
+      supportsDirectPublicPublishing:
+        this.config.reviewApproved ||
+        this.config.reviewTestingAuthorized === true,
       requiresAppReview: true,
       supportsStatusPolling: true,
       supportsChunkedUpload: true,
@@ -321,7 +324,10 @@ export class InstagramAdapter implements PlatformAdapter {
   }
 
   async publish(input: PublishInput) {
-    if (!this.config.reviewApproved) {
+    if (
+      !this.config.reviewApproved &&
+      this.config.reviewTestingAuthorized !== true
+    ) {
       return {
         outcome: "failed" as const,
         sanitizedResponse: { blocked: "meta_app_review_pending" },
@@ -408,7 +414,10 @@ export class InstagramAdapter implements PlatformAdapter {
     statusHandle: string,
     phase: string,
   ) {
-    if (!this.config.reviewApproved) {
+    if (
+      !this.config.reviewApproved &&
+      this.config.reviewTestingAuthorized !== true
+    ) {
       return {
         outcome: "failed" as const,
         sanitizedResponse: { blocked: "meta_app_review_pending" },

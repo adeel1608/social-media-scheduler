@@ -13,6 +13,10 @@ const phase2bPreflightFile = "202609050004_phase_2b_preflight.sql";
 const phase2bPreflightSql = files.includes(phase2bPreflightFile)
   ? migrationContents[files.indexOf(phase2bPreflightFile)].toLowerCase()
   : "";
+const metaReviewMigrationFile = "202609060001_meta_review_access.sql";
+const metaReviewMigrationSql = files.includes(metaReviewMigrationFile)
+  ? migrationContents[files.indexOf(metaReviewMigrationFile)].toLowerCase()
+  : "";
 const requiredTables = [
   "installation_settings",
   "connected_accounts",
@@ -99,6 +103,19 @@ const requirements = {
     ) &&
     phase2bPreflightSql.includes("to service_role") &&
     !phase2bPreflightSql.includes("request.jwt.claim.role"),
+  "isolated Meta review workspace":
+    metaReviewMigrationSql.includes("authorization_context") &&
+    metaReviewMigrationSql.includes(
+      "function public.create_meta_review_post",
+    ) &&
+    metaReviewMigrationSql.includes(
+      "function public.reserve_meta_review_media",
+    ) &&
+    metaReviewMigrationSql.includes(
+      "function public.verify_meta_review_schema",
+    ) &&
+    metaReviewMigrationSql.includes("from public, anon, authenticated") &&
+    metaReviewMigrationSql.includes("to service_role"),
 };
 if (missingTables.length || Object.values(requirements).includes(false)) {
   console.error({ missingTables, requirements });

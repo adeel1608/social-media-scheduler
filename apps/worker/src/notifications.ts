@@ -12,6 +12,7 @@ interface FailureNotificationInput {
   status: "failed" | "needs_review";
   safeMessage: string;
   attempt: number;
+  authorizationContext?: "owner" | "meta_review";
 }
 
 interface EmailEventRow {
@@ -29,6 +30,7 @@ interface PendingEmailEventRow extends EmailEventRow {
     platform: string;
     scheduled_at_utc: string;
     last_error_message: string | null;
+    authorization_context: "owner" | "meta_review";
     posts: { title: string } | null;
   };
 }
@@ -41,6 +43,7 @@ export async function sendFailureEmailOnce(
   env: Env,
   input: FailureNotificationInput,
 ): Promise<boolean> {
+  if (input.authorizationContext === "meta_review") return false;
   const db = new SupabaseRest(env);
   const key = deduplicationKey(input);
   const inserted = await db.insert<EmailEventRow[]>(
@@ -72,11 +75,12 @@ export async function retryFailedNotifications(
   const db = new SupabaseRest(env);
   const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 100));
   const events = await db.select<PendingEmailEventRow[]>(
-    `email_events?status=in.(pending,failed)&next_attempt_at=lte.now()&select=id,status,delivery_attempts,deduplication_key,event_type,post_targets!inner(id,owner_id,platform,scheduled_at_utc,last_error_message,posts(title))&order=next_attempt_at.asc,created_at.asc&limit=${boundedLimit}`,
+    `email_events?status=in.(pending,failed)&next_attempt_at=lte.now()&post_targets.authorization_context=eq.owner&select=id,status,delivery_attempts,deduplication_key,event_type,post_targets!inner(id,owner_id,platform,scheduled_at_utc,last_error_message,authorization_context,posts(title))&order=next_attempt_at.asc,created_at.asc&limit=${boundedLimit}`,
   );
   let sent = 0;
   for (const event of events) {
     const target = event.post_targets;
+    if (target.authorization_context === "meta_review") continue;
     const attemptMatch = /:attempt:(\d+)$/.exec(event.deduplication_key);
     const delivered = await deliverFailureEmail(
       env,

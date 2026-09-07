@@ -716,3 +716,144 @@ describe("Instagram durable provider-write phases", () => {
     },
   );
 });
+
+describe("Meta reviewer queue gate", () => {
+  const reviewerId = "44444444-4444-4444-8444-444444444444";
+  const reviewEnv = {
+    LIVE_TEST_CONFIRM: "false",
+    META_REVIEW_MODE: "true",
+    META_REVIEWER_EMAIL: "reviewer@postline.dev",
+    META_REVIEWER_USER_ID: reviewerId,
+    OWNER_EMAIL: "owner@postline.dev",
+  } as Env;
+
+  function reviewTarget(overrides: Partial<TargetRecord> = {}): TargetRecord {
+    return target({
+      owner_id: reviewerId,
+      platform: "instagram",
+      authorization_context: "meta_review",
+      connected_accounts: {
+        owner_id: reviewerId,
+        platform: "instagram",
+        authorization_context: "meta_review",
+        connection_status: "connected",
+        remote_account_id: "reviewer-instagram",
+      },
+      posts: { owner_id: reviewerId, title: "Review post", post_media: [] },
+      ...overrides,
+    });
+  }
+
+  it("permits only the exact reviewer Instagram target without changing live flags", async () => {
+    const publish = vi.fn(async () => ({
+      outcome: "published" as const,
+      remoteContentId: "review-media-1",
+      sanitizedResponse: {},
+    }));
+    const platformAdapter = adapter({ platform: "instagram", publish });
+    const deps = dependencies(platformAdapter);
+
+    await expect(
+      processClaimedQueueJob(
+        reviewEnv,
+        new FakeDatabase() as unknown as SupabaseRest,
+        job,
+        reviewTarget(),
+        deps,
+      ),
+    ).resolves.toMatchObject({ classification: "success" });
+    expect(publish).toHaveBeenCalledOnce();
+    expect(deps.adapterFor).toHaveBeenCalledWith("instagram", reviewEnv, {
+      metaReviewTestingAuthorized: true,
+    });
+    expect(reviewEnv.LIVE_TEST_CONFIRM).toBe("false");
+  });
+
+  it.each([
+    ["disabled mode", { META_REVIEW_MODE: "false" }, {}],
+    ["wrong owner", {}, { owner_id: "11111111-1111-4111-8111-111111111111" }],
+    ["TikTok target", {}, { platform: "tiktok" as const }],
+    [
+      "owner-context account",
+      {},
+      {
+        connected_accounts: {
+          owner_id: reviewerId,
+          platform: "instagram",
+          authorization_context: "owner",
+          connection_status: "connected",
+        },
+      },
+    ],
+  ])(
+    "blocks %s before loading a token or calling a provider",
+    async (_case, envOverrides, targetOverrides) => {
+      const publish = vi.fn();
+      const deps = dependencies(adapter({ platform: "instagram", publish }));
+      const database = new FakeDatabase();
+
+      await expect(
+        processClaimedQueueJob(
+          { ...reviewEnv, ...envOverrides },
+          database as unknown as SupabaseRest,
+          job,
+          reviewTarget(targetOverrides),
+          deps,
+        ),
+      ).resolves.toMatchObject({
+        classification: "validation_or_authorization_failure",
+        state: "blocked_authorization",
+      });
+      expect(deps.loadAccessToken).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not let the owner path inherit the reviewer publishing exception", async () => {
+    const publish = vi.fn();
+    const deps = dependencies(adapter({ platform: "instagram", publish }));
+
+    await expect(
+      processClaimedQueueJob(
+        reviewEnv,
+        new FakeDatabase() as unknown as SupabaseRest,
+        job,
+        reviewTarget({ authorization_context: "owner" }),
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      classification: "validation_or_authorization_failure",
+      state: "blocked_authorization",
+    });
+    expect(deps.loadAccessToken).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("preserves ambiguity when review access changes after provider initiation", async () => {
+    const publish = vi.fn();
+    const deps = dependencies(adapter({ platform: "instagram", publish }));
+    const database = new FakeDatabase();
+
+    await expect(
+      processClaimedQueueJob(
+        { ...reviewEnv, META_REVIEW_MODE: "false" },
+        database as unknown as SupabaseRest,
+        job,
+        reviewTarget({
+          status: "processing",
+          publish_request_sent_at: "2026-09-06T01:00:00.000Z",
+        }),
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      classification: "ambiguous_provider_acceptance",
+      state: "needs_review",
+    });
+    expect(database.updates.at(-1)?.body).toMatchObject({
+      status: "needs_review",
+      last_error_code: "meta_review_disabled_after_provider_initiation",
+    });
+    expect(deps.loadAccessToken).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+});

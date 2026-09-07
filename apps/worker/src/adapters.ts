@@ -8,7 +8,11 @@ import type { Platform } from "@scheduler/shared";
 
 import type { Env } from "./env";
 
-export function adapterFor(platform: Platform, env: Env): PlatformAdapter {
+export function adapterFor(
+  platform: Platform,
+  env: Env,
+  options: { metaReviewTestingAuthorized?: boolean } = {},
+): PlatformAdapter {
   switch (platform) {
     case "instagram":
       return new InstagramAdapter({
@@ -16,6 +20,7 @@ export function adapterFor(platform: Platform, env: Env): PlatformAdapter {
         appSecret: env.META_APP_SECRET,
         graphVersion: env.META_GRAPH_VERSION,
         reviewApproved: env.META_APP_REVIEW_APPROVED === "true",
+        reviewTestingAuthorized: options.metaReviewTestingAuthorized === true,
       });
     case "tiktok":
       return new TikTokAdapter({

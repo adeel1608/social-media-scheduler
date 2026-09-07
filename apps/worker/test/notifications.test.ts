@@ -30,6 +30,19 @@ const env = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("failure notification idempotency", () => {
+  it("never creates an owner notification for a Meta reviewer target", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetcher);
+
+    await expect(
+      sendFailureEmailOnce(env, {
+        ...input,
+        authorizationContext: "meta_review",
+      }),
+    ).resolves.toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("uses database and Resend idempotency while redacting message details", async () => {
     const fetcher = vi
       .fn<typeof fetch>()
@@ -191,5 +204,8 @@ describe("failure notification idempotency", () => {
       attempted: 1,
       sent: 1,
     });
+    expect(String(fetcher.mock.calls[0]?.[0])).toContain(
+      "post_targets.authorization_context=eq.owner",
+    );
   });
 });

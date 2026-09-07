@@ -8,6 +8,7 @@ const REQUIRED_DEPLOY_VALUES = [
   "VITE_SUPABASE_URL",
   "VITE_SUPABASE_ANON_KEY",
   "VITE_TURNSTILE_SITE_KEY",
+  "VITE_META_REVIEW_MODE",
   "VITE_OPERATOR_NAME",
   "VITE_PUBLIC_CONTACT_EMAIL",
   "GITHUB_REF_NAME",
@@ -38,6 +39,9 @@ export function validateDeployConfiguration(environment) {
   }
   if (environment.VITE_DEMO_MODE !== "false") {
     errors.push("VITE_DEMO_MODE must exactly equal false");
+  }
+  if (!["true", "false"].includes(environment.VITE_META_REVIEW_MODE)) {
+    errors.push("VITE_META_REVIEW_MODE must exactly equal true or false");
   }
   if (
     normalized(environment.GITHUB_REF_NAME) !==
@@ -94,6 +98,15 @@ export function validateDeployConfiguration(environment) {
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+export function validateReviewModeMatch(environment, wranglerConfiguration) {
+  const workerMode = /^META_REVIEW_MODE\s*=\s*"(true|false)"\s*$/m.exec(
+    wranglerConfiguration,
+  )?.[1];
+  return Boolean(
+    workerMode && workerMode === environment.VITE_META_REVIEW_MODE,
+  );
 }
 
 function normalized(value) {

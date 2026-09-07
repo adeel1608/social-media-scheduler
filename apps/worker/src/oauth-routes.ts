@@ -10,15 +10,32 @@ import { Hono } from "hono";
 
 import { adapterFor, redirectUriFor } from "./adapters";
 import type { Variables } from "./auth";
-import { ownerAuth } from "./auth";
+import { workspaceAuth } from "./auth";
 import { ownerDatabase, SupabaseRest } from "./database";
 import { encryptionKeyResolver } from "./encryption";
 import type { Env } from "./env";
+import { metaReviewerConfiguration } from "./env";
 
 const oauth = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 function isPlatform(value: string): value is Platform {
   return value === "instagram" || value === "tiktok" || value === "youtube";
+}
+
+export function oauthStateAuthorizationValid(
+  env: Env,
+  platform: Platform,
+  record: { owner_id?: unknown; authorization_context?: unknown },
+): boolean {
+  if (record.authorization_context === "owner") return true;
+  if (record.authorization_context !== "meta_review") return false;
+  const reviewer = metaReviewerConfiguration(env);
+  return Boolean(
+    reviewer.enabled &&
+    reviewer.configured &&
+    platform === "instagram" &&
+    record.owner_id === reviewer.userId,
+  );
 }
 
 async function hashState(state: string): Promise<string> {
@@ -31,14 +48,28 @@ async function hashState(state: string): Promise<string> {
   ).join("");
 }
 
-oauth.post("/:platform/start", ownerAuth, async (c) => {
+oauth.post("/:platform/start", workspaceAuth, async (c) => {
   const platform = c.req.param("platform") ?? "";
   if (!isPlatform(platform))
     return c.json({ error: "unsupported_platform" }, 404);
-  const allowed = await ownerDatabase(c.env, c.get("jwt")).rpc<boolean>(
-    "consume_rate_limit",
-    { p_route: "oauth_start", p_limit: 10, p_window_seconds: 60 },
-  );
+  const reviewer = c.get("accessRole") === "meta_reviewer";
+  if (reviewer && platform !== "instagram") {
+    return c.json({ error: "reviewer_platform_not_allowed" }, 403);
+  }
+  const allowed = reviewer
+    ? await new SupabaseRest(c.env).rpc<boolean>(
+        "consume_meta_review_rate_limit",
+        {
+          p_reviewer_id: c.get("user").id,
+          p_route: "oauth_start",
+          p_limit: 10,
+          p_window_seconds: 60,
+        },
+      )
+    : await ownerDatabase(c.env, c.get("jwt")).rpc<boolean>(
+        "consume_rate_limit",
+        { p_route: "oauth_start", p_limit: 10, p_window_seconds: 60 },
+      );
   if (!allowed) return c.json({ error: "rate_limit_exceeded" }, 429);
   const state = createOAuthState();
   const verifier = createPkceVerifier();
@@ -52,6 +83,7 @@ oauth.post("/:platform/start", ownerAuth, async (c) => {
   await db.insert("oauth_states", {
     owner_id: c.get("user").id,
     platform,
+    authorization_context: reviewer ? "meta_review" : "owner",
     state_hash: await hashState(state),
     encrypted_pkce_verifier: encrypted.ciphertext,
     pkce_nonce: encrypted.nonce,
@@ -88,6 +120,17 @@ oauth.get("/:platform/callback", async (c) => {
   );
   if (consumed.length !== 1)
     return c.json({ error: "oauth_state_already_consumed" }, 400);
+  if (!oauthStateAuthorizationValid(c.env, platform, record)) {
+    return c.json(
+      {
+        error:
+          record.authorization_context === "meta_review"
+            ? "reviewer_oauth_not_authorized"
+            : "invalid_oauth_authorization_context",
+      },
+      record.authorization_context === "meta_review" ? 403 : 400,
+    );
+  }
   const verifier = await decryptSecret(
     {
       ciphertext: record.encrypted_pkce_verifier,
@@ -121,6 +164,7 @@ oauth.get("/:platform/callback", async (c) => {
     {
       owner_id: record.owner_id,
       platform,
+      authorization_context: record.authorization_context,
       remote_account_id: profile.id,
       username: profile.username,
       encrypted_access_token: access.ciphertext,

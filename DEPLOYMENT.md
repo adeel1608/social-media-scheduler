@@ -35,6 +35,15 @@ corepack pnpm supabase migration list
 
 Create the owner user and installation row as described in [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md). Never use the service-role key in the browser. Migration `202609030003_uploadthing_storage.sql` adds UploadThing metadata plus atomic reservation, completion, and usage RPCs. It preserves legacy storage rows for forward compatibility; the current application does not fetch or delete those legacy objects.
 
+Migration `202609060001_meta_review_access.sql` adds only the durable context,
+indexes and service-only RPCs required for the temporary Meta reviewer
+workspace. Apply it before deploying code that uses reviewer access. The
+deployment preflight calls the stable, non-mutating
+`verify_meta_review_schema()` function and stops before Worker deployment when
+the migration is missing or inaccessible. See
+[docs/META_SETUP.md](docs/META_SETUP.md) before enabling the default-false
+gate.
+
 ## UploadThing
 
 Complete [docs/UPLOADTHING_SETUP.md](docs/UPLOADTHING_SETUP.md). Enter the v7 token directly into Wrangler's hidden prompt:
@@ -118,6 +127,7 @@ Set only these public build-time values in the web hosting project:
 - `VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co`
 - `VITE_SUPABASE_ANON_KEY=...` (public anon key only)
 - `VITE_TURNSTILE_SITE_KEY=...` (public Turnstile Site Key only)
+- `VITE_META_REVIEW_MODE=false` (public form visibility only; not authority)
 - `VITE_DEMO_MODE=false`
 - `VITE_OPERATOR_NAME=YOUR_PUBLIC_OPERATOR_NAME`
 - `VITE_PUBLIC_CONTACT_EMAIL=YOUR_PUBLIC_CONTACT_EMAIL`
@@ -174,7 +184,7 @@ Do not enable `LIVE_TEST_CONFIRM` merely to make `/health` green. No social publ
 operator to type `DEPLOY`, and uses the protected `production` environment. Set
 the non-secret `CLOUDFLARE_PAGES_PROJECT`, `CLOUDFLARE_WORKER_NAME`, `APP_URL`,
 `API_URL`, `SUPABASE_URL`, `OPERATOR_NAME`, `PUBLIC_CONTACT_EMAIL`, and
-`VITE_TURNSTILE_SITE_KEY`
+`VITE_TURNSTILE_SITE_KEY` and `META_REVIEW_MODE`
 repository/environment variables.
 Set only the Cloudflare deployment credentials and browser-safe Supabase anon
 key in the workflow's secret store. The preflight rejects missing, malformed,

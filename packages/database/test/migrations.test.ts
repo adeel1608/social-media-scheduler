@@ -14,6 +14,10 @@ const phase2bPreflightSql = readFileSync(
   resolve(migrationDirectory, "202609050004_phase_2b_preflight.sql"),
   "utf8",
 ).toLowerCase();
+const metaReviewSql = readFileSync(
+  resolve(migrationDirectory, "202609060001_meta_review_access.sql"),
+  "utf8",
+).toLowerCase();
 
 describe("Supabase migrations", () => {
   it("enables RLS on every owner data table", () => {
@@ -91,5 +95,22 @@ describe("Supabase migrations", () => {
     );
     expect(phase2bPreflightSql).toContain("to service_role");
     expect(phase2bPreflightSql).not.toContain("request.jwt.claim.role");
+  });
+
+  it("keeps Meta review writes service-only and durably scoped", () => {
+    expect(migrationFiles).toContain("202609060001_meta_review_access.sql");
+    expect(metaReviewSql).toContain("authorization_context");
+    expect(metaReviewSql).toContain("function public.create_meta_review_post");
+    expect(metaReviewSql).toContain(
+      "function public.reserve_meta_review_media",
+    );
+    expect(metaReviewSql).toContain(
+      "function public.verify_meta_review_schema",
+    );
+    expect(metaReviewSql).toContain("from public, anon, authenticated");
+    expect(metaReviewSql).toContain("to service_role");
+    expect(metaReviewSql).toContain(
+      "new.authorization_context = 'meta_review'",
+    );
   });
 });

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { validateDeployConfiguration } from "../../../scripts/deploy-config.mjs";
+import {
+  validateDeployConfiguration,
+  validateReviewModeMatch,
+} from "../../../scripts/deploy-config.mjs";
 
 const validEnvironment = {
   DEPLOY_CONFIRM: "DEPLOY",
@@ -13,6 +16,7 @@ const validEnvironment = {
   VITE_SUPABASE_URL: "https://owner-project.supabase.co",
   VITE_SUPABASE_ANON_KEY: "sb_publishable_owner_public_key_sentinel",
   VITE_TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
+  VITE_META_REVIEW_MODE: "false",
   VITE_DEMO_MODE: "false",
   VITE_OPERATOR_NAME: "Owner Postline",
   VITE_PUBLIC_CONTACT_EMAIL: "owner@postline.dev",
@@ -82,5 +86,19 @@ describe("production deployment preflight", () => {
     expect(result.errors).toContain(
       "the deployment ref must be the repository default branch",
     );
+  });
+});
+
+describe("temporary reviewer deployment consistency", () => {
+  it("requires the authoritative Worker gate and public Pages flag to match", () => {
+    expect(
+      validateReviewModeMatch(validEnvironment, 'META_REVIEW_MODE = "false"'),
+    ).toBe(true);
+    expect(
+      validateReviewModeMatch(
+        { ...validEnvironment, VITE_META_REVIEW_MODE: "true" },
+        'META_REVIEW_MODE = "false"',
+      ),
+    ).toBe(false);
   });
 });

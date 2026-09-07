@@ -4,14 +4,37 @@ import { adapterFor } from "./adapters";
 import { SupabaseRest } from "./database";
 import { encryptionKeyResolver } from "./encryption";
 import type { Env } from "./env";
+import { metaReviewerConfiguration } from "./env";
+
+interface AnalyticsSyncScope {
+  authorizationContext?: "owner" | "meta_review";
+  ownerId?: string;
+}
 
 export async function syncAnalyticsBatch(
   env: Env,
   limit = 10,
+  scope: AnalyticsSyncScope = { authorizationContext: "owner" },
 ): Promise<number> {
   const db = new SupabaseRest(env);
+  const authorizationContext = scope.authorizationContext ?? "owner";
+  if (authorizationContext === "meta_review") {
+    const reviewer = metaReviewerConfiguration(env);
+    if (
+      !reviewer.enabled ||
+      !reviewer.configured ||
+      scope.ownerId !== reviewer.userId
+    ) {
+      return 0;
+    }
+  }
+  const ownerFilter = scope.ownerId
+    ? `&owner_id=eq.${encodeURIComponent(scope.ownerId)}`
+    : "";
+  const platformFilter =
+    authorizationContext === "meta_review" ? "&platform=eq.instagram" : "";
   const targets = await db.select<Array<Record<string, any>>>(
-    `post_targets?status=eq.published&remote_content_id=not.is.null&select=*,connected_accounts(*)&order=updated_at.asc&limit=${limit}`,
+    `post_targets?status=eq.published&authorization_context=eq.${authorizationContext}${ownerFilter}${platformFilter}&remote_content_id=not.is.null&select=*,connected_accounts(*)&order=updated_at.asc&limit=${limit}`,
   );
   let synced = 0;
   const end = new Date();
@@ -19,6 +42,15 @@ export async function syncAnalyticsBatch(
   for (const target of targets) {
     try {
       const account = target.connected_accounts;
+      if (
+        !account ||
+        account.owner_id !== target.owner_id ||
+        account.authorization_context !== authorizationContext ||
+        (authorizationContext === "meta_review" &&
+          (target.platform !== "instagram" || account.platform !== "instagram"))
+      ) {
+        continue;
+      }
       const accessToken = await decryptSecret(
         {
           ciphertext: account.encrypted_access_token,

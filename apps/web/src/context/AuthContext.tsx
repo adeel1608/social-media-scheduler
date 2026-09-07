@@ -19,10 +19,16 @@ const supabase =
 
 interface AuthContextValue {
   session: Session | null;
+  accessRole: "owner" | "meta_reviewer" | null;
   loading: boolean;
   demoMode: boolean;
   sendMagicLink(
     email: string,
+    captchaToken: string,
+  ): Promise<{ error?: string }>;
+  signInMetaReviewer(
+    email: string,
+    password: string,
     captchaToken: string,
   ): Promise<{ error?: string }>;
   signOut(): Promise<void>;
@@ -33,6 +39,10 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(!demoMode && Boolean(supabase));
+  const [authInitialized, setAuthInitialized] = useState(demoMode || !supabase);
+  const [accessRole, setAccessRole] = useState<
+    "owner" | "meta_reviewer" | null
+  >(demoMode ? "owner" : null);
 
   useEffect(() => {
     if (!supabase) return;
@@ -44,20 +54,63 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => undefined)
       .finally(() => {
-        if (active) setLoading(false);
+        if (active) setAuthInitialized(true);
       });
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) =>
-      setSession(nextSession),
-    );
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthInitialized(true);
+    });
     return () => {
       active = false;
       data.subscription.unsubscribe();
     };
   }, []);
 
+  useEffect(() => {
+    if (!authInitialized || demoMode || !supabase) return;
+    let active = true;
+    if (!session) {
+      setAccessRole(null);
+      setLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+    setLoading(true);
+    void fetch(
+      `${import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8787"}/api/session`,
+      { headers: { Authorization: `Bearer ${session.access_token}` } },
+    )
+      .then(async (response) => {
+        const body = (await response.json().catch(() => null)) as {
+          role?: unknown;
+        } | null;
+        if (
+          !response.ok ||
+          (body?.role !== "owner" && body?.role !== "meta_reviewer")
+        ) {
+          throw new Error("access_denied");
+        }
+        if (active) setAccessRole(body.role);
+      })
+      .catch(() => {
+        if (!active) return;
+        setAccessRole(null);
+        setSession(null);
+        void supabase.auth.signOut({ scope: "local" });
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authInitialized, session]);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       session,
+      accessRole,
       loading,
       demoMode,
       async sendMagicLink(email, captchaToken) {
@@ -83,12 +136,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             }
           : {};
       },
+      async signInMetaReviewer(email, password, captchaToken) {
+        if (!supabase || import.meta.env.VITE_META_REVIEW_MODE !== "true") {
+          return { error: "Reviewer sign-in is not available." };
+        }
+        if (!captchaToken.trim()) {
+          return { error: "Complete the security challenge and try again." };
+        }
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+          options: { captchaToken },
+        });
+        if (error || !data.session) {
+          return { error: "The email or password could not be verified." };
+        }
+        try {
+          const response = await fetch(
+            `${import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8787"}/api/session`,
+            {
+              headers: {
+                Authorization: `Bearer ${data.session.access_token}`,
+              },
+            },
+          );
+          const body = (await response.json().catch(() => null)) as {
+            role?: unknown;
+          } | null;
+          if (!response.ok || body?.role !== "meta_reviewer") {
+            throw new Error("access_denied");
+          }
+          setSession(data.session);
+          setAccessRole("meta_reviewer");
+          return {};
+        } catch {
+          await supabase.auth.signOut({ scope: "local" });
+          setSession(null);
+          setAccessRole(null);
+          return { error: "The email or password could not be verified." };
+        }
+      },
       async signOut() {
         await supabase?.auth.signOut({ scope: "local" });
         setSession(null);
+        setAccessRole(null);
       },
     }),
-    [loading, session],
+    [accessRole, loading, session],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

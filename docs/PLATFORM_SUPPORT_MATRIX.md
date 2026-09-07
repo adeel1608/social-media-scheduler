@@ -38,7 +38,13 @@ Official analytics sources: [Instagram Insights reference](https://developers.fa
 
 ## Policy behavior encoded in Postline
 
-- No password login, browser automation, scraping, unofficial wrapper, or manual-post fallback.
+- No provider-password login, public signup, browser automation, scraping,
+  unofficial wrapper, or manual-post fallback. The only application password
+  flow is the default-disabled, manually provisioned Meta reviewer account
+  described in [META_SETUP.md](META_SETUP.md).
 - Public TikTok/YouTube requests are invalid while their audit flag is pending; private visibility is never substituted silently.
 - Provider status polling and continuation of an existing upload session are safe recovery. A new publish request is never automatically issued after an API failure or ambiguous response.
-- `LIVE_TEST_CONFIRM` must be explicitly true before any real provider publication request.
+- `LIVE_TEST_CONFIRM` must be explicitly true before normal owner publication.
+  The only exception is an exact reviewer-owned Instagram target while the
+  separate temporary Meta review gate is enabled; that exception never changes
+  an approval/audit flag.

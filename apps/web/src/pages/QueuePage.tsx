@@ -18,10 +18,11 @@ const ROW_HEIGHT = 84;
 const VIEW_HEIGHT = 584;
 
 export function QueuePage() {
-  const { demoMode, session } = useAuth();
+  const { demoMode, session, accessRole } = useAuth();
+  const reviewer = accessRole === "meta_reviewer";
   const [scrollTop, setScrollTop] = useState(0);
   const [query, setQuery] = useState("");
-  const [platform, setPlatform] = useState("all");
+  const [platform, setPlatform] = useState(reviewer ? "instagram" : "all");
   const [liveRows, setLiveRows] = useState<typeof demoQueue>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
@@ -153,10 +154,10 @@ export function QueuePage() {
                 value={platform}
                 onChange={(event) => setPlatform(event.target.value)}
               >
-                <option value="all">All platforms</option>
+                {!reviewer && <option value="all">All platforms</option>}
                 <option value="instagram">Instagram</option>
-                <option value="tiktok">TikTok</option>
-                <option value="youtube">YouTube</option>
+                {!reviewer && <option value="tiktok">TikTok</option>}
+                {!reviewer && <option value="youtube">YouTube</option>}
               </select>
               <ChevronDown size={14} />
             </label>

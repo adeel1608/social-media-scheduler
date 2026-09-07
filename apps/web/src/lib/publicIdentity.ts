@@ -5,6 +5,7 @@ export interface PublicIdentityEnvironment {
   readonly VITE_SUPABASE_URL?: string;
   readonly VITE_SUPABASE_ANON_KEY?: string;
   readonly VITE_TURNSTILE_SITE_KEY?: string;
+  readonly VITE_META_REVIEW_MODE?: string;
   readonly VITE_DEMO_MODE?: string;
   readonly VITE_OPERATOR_NAME?: string;
   readonly VITE_PUBLIC_CONTACT_EMAIL?: string;
@@ -21,6 +22,7 @@ export interface PublicWebConfiguration {
   supabaseUrl: string;
   supabaseAnonKey: string;
   turnstileSiteKey: string;
+  metaReviewMode: boolean;
   identity: PublicIdentity;
 }
 
@@ -47,6 +49,7 @@ const PUBLIC_CONFIGURATION_KEYS = [
   "VITE_SUPABASE_URL",
   "VITE_SUPABASE_ANON_KEY",
   "VITE_TURNSTILE_SITE_KEY",
+  "VITE_META_REVIEW_MODE",
 ] as const;
 
 export function resolvePublicWebConfiguration(
@@ -63,6 +66,7 @@ export function resolvePublicWebConfiguration(
       supabaseUrl: env.VITE_SUPABASE_URL?.trim() || "",
       supabaseAnonKey: env.VITE_SUPABASE_ANON_KEY?.trim() || "",
       turnstileSiteKey: env.VITE_TURNSTILE_SITE_KEY?.trim() || "",
+      metaReviewMode: false,
       identity,
     };
   }
@@ -101,6 +105,9 @@ export function resolvePublicWebConfiguration(
   ) {
     throw new Error("VITE_TURNSTILE_SITE_KEY must be a valid public site key.");
   }
+  if (!["true", "false"].includes(env.VITE_META_REVIEW_MODE!)) {
+    throw new Error("VITE_META_REVIEW_MODE must exactly equal true or false.");
+  }
 
   return {
     appUrl,
@@ -108,6 +115,7 @@ export function resolvePublicWebConfiguration(
     supabaseUrl,
     supabaseAnonKey,
     turnstileSiteKey,
+    metaReviewMode: env.VITE_META_REVIEW_MODE === "true",
     identity,
   };
 }

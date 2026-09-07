@@ -32,8 +32,10 @@ jobs:
       - run: corepack pnpm test
       - run: corepack pnpm build:verify
       - run: corepack pnpm db:validate
-      - name: Start disposable Supabase and apply migrations
-        run: corepack pnpm exec supabase start >/dev/null
+      - name: Start disposable Supabase and apply all nine migrations
+        run: |
+          corepack pnpm exec supabase start
+          corepack pnpm exec supabase migration list --local
       - name: Verify migrations against PostgreSQL
         run: corepack pnpm db:test
       - name: Stop disposable Supabase
@@ -61,6 +63,7 @@ jobs:
           VITE_SUPABASE_URL: https://postline-ci.supabase.co
           VITE_SUPABASE_ANON_KEY: sb_publishable_CI_ONLY_NOT_A_CREDENTIAL_1234567890
           VITE_TURNSTILE_SITE_KEY: 1x00000000000000000000AA
+          VITE_META_REVIEW_MODE: "false"
           VITE_OPERATOR_NAME: Postline CI
           VITE_PUBLIC_CONTACT_EMAIL: ci-contact@postline.dev
       - run: corepack pnpm exec playwright install --with-deps chromium

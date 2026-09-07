@@ -26,6 +26,7 @@ export interface ConnectedAccountSummary {
   approval_state: "approved" | "pending";
   stored_approval_state: "approved" | "pending" | "not_required" | "rejected";
   requires_reconnect: boolean;
+  review_testing_authorized?: boolean;
   metadata: {
     displayName?: string;
     accountType?: string;
@@ -68,6 +69,9 @@ function accountStatus(account: ConnectedAccountSummary): string {
 }
 
 function approvalStatus(account: ConnectedAccountSummary): string {
+  if (account.review_testing_authorized) {
+    return "Temporary Meta review testing is enabled for this workspace";
+  }
   return {
     approved: "Current Worker approval flag is enabled",
     pending: "Current Worker approval flag is false",
@@ -92,7 +96,16 @@ function removeCallbackNotification(): Platform | null {
 }
 
 export function AccountsPage() {
-  const { demoMode, loading: authenticationLoading, session } = useAuth();
+  const {
+    demoMode,
+    loading: authenticationLoading,
+    session,
+    accessRole,
+  } = useAuth();
+  const reviewer = accessRole === "meta_reviewer";
+  const visibleProviders = reviewer
+    ? providerDetails.filter((provider) => provider.platform === "instagram")
+    : providerDetails;
   const [accounts, setAccounts] = useState<ConnectedAccountSummary[]>([]);
   const [loading, setLoading] = useState(!demoMode);
   const [error, setError] = useState("");
@@ -320,7 +333,7 @@ export function AccountsPage() {
         </div>
       )}
       <div className="account-grid" aria-busy={loading}>
-        {providerDetails.map((provider) => {
+        {visibleProviders.map((provider) => {
           const providerAccounts = accounts.filter(
             (account) => account.platform === provider.platform,
           );
@@ -367,7 +380,8 @@ export function AccountsPage() {
                     const connected = account.connection_status === "connected";
                     const approval = approvalStatus(account);
                     const approvalConfirmed =
-                      account.approval_state === "approved";
+                      account.approval_state === "approved" ||
+                      account.review_testing_authorized === true;
                     return (
                       <section className="connected-account" key={account.id}>
                         <h2>
@@ -402,7 +416,11 @@ export function AccountsPage() {
                               <Clock3 size={16} />
                             )}
                             <div>
-                              <small>CURRENT LAUNCH GATE</small>
+                              <small>
+                                {account.review_testing_authorized
+                                  ? "META REVIEW TEST GATE"
+                                  : "CURRENT LAUNCH GATE"}
+                              </small>
                               <strong>{approval}</strong>
                             </div>
                           </span>

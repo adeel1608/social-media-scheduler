@@ -78,6 +78,7 @@ describe("production deployment safety", () => {
   it("keeps real publishing disabled and queue recovery bounded", () => {
     expect(wrangler).toMatch(/^LIVE_TEST_CONFIRM = "false"$/m);
     expect(wrangler).toMatch(/^META_APP_REVIEW_APPROVED = "false"$/m);
+    expect(wrangler).toMatch(/^META_REVIEW_MODE = "false"$/m);
     expect(wrangler).toMatch(/^TIKTOK_CONTENT_POSTING_AUDITED = "false"$/m);
     expect(wrangler).toMatch(/^YOUTUBE_API_AUDIT_APPROVED = "false"$/m);
     expect(wrangler).toMatch(/^max_retries = 5$/m);

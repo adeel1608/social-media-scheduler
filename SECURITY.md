@@ -2,7 +2,24 @@
 
 ## Model
 
-Each deployment has one owner. Supabase authenticates with a one-time magic link, the Worker compares the verified email to `OWNER_EMAIL`, and RLS requires the JWT user ID plus matching installation owner email. The client requests magic links with `shouldCreateUser: false`, and the checked-in Supabase Auth configuration disables direct global/email signup and anonymous users. Hosted installations must apply the same dashboard setting after creating the owner, because client controls alone do not protect the direct Auth API.
+Each deployment has one owner. Supabase authenticates the owner with a one-time
+magic link, the Worker compares the verified email to `OWNER_EMAIL`, and RLS
+requires the JWT user ID plus matching installation owner email. The client
+requests magic links with `shouldCreateUser: false`, and the checked-in
+Supabase Auth configuration disables direct global/email signup and anonymous
+users. Hosted installations must apply the same dashboard setting after
+creating the owner, because client controls alone do not protect the direct
+Auth API.
+
+Temporary Meta review access does not change that ownership model. It is
+disabled by default, requires a manually pre-created Supabase password user
+with CAPTCHA, and verifies both a configured lower-case email and exact JWT
+UUID plus the password authentication method at the Worker. Reviewer JWTs
+receive no direct operational-table RLS
+access. The Worker exposes a default-deny Instagram-only route set and uses
+service-only functions whose inputs are constrained to the authenticated
+reviewer UUID. The browser flag only controls form visibility and conveys no
+authority.
 
 ## Secrets and tokens
 
@@ -32,8 +49,8 @@ resolver change.
 ## API controls
 
 - Zod validates incoming posts, pagination and platform metadata.
-- Every `/api/*` endpoint except provider OAuth callbacks and the UploadThing file-route endpoint requires generic owner middleware. Upload initiation authenticates the owner inside UploadThing route middleware; UploadThing callbacks are public so the provider can reach them, but the official SDK verifies their HMAC signature before completion logic runs.
-- State-changing database RPCs enforce owner identity/RLS again.
+- Every `/api/*` endpoint except provider OAuth callbacks and the UploadThing file-route endpoint requires verified workspace middleware. Owner routes retain their existing email gate; reviewer routes also require current mode plus exact email/UUID and a default-deny allowlist. UploadThing callbacks are public so the provider can reach them, but the official SDK verifies their HMAC signature before completion logic runs.
+- State-changing owner RPCs enforce owner identity/RLS again. Reviewer RPCs are executable only by `service_role`, validate reviewer ownership and are never callable directly by `anon` or `authenticated`.
 - Sensitive route rate limiting is backed by `rate_limit_buckets`; deployments should also add Cloudflare WAF/rate-limit rules to OAuth and upload endpoints.
 - Email OTP requests are spaced by at least 60 seconds in the local Auth configuration. Hosted deployments must retain that minimum, review Supabase Auth rate limits, and add CAPTCHA when appropriate for their public threat model.
 - Security headers deny framing, MIME sniffing, sensitive browser capabilities, and unexpected origins. The production build generates a Pages CSP whose connection sources are limited to the configured Worker and Supabase origins plus UploadThing's documented regional ingest hosts.
@@ -43,7 +60,12 @@ resolver change.
 
 - No provider password is accepted. No scraping, Selenium, browser automation, quota bypass or unofficial publishing endpoint exists.
 - Production configuration fails closed at the HTTP, scheduled, and queue entry points. Except for the diagnostic `/health` response, an incomplete production Worker returns 503 before authentication, callbacks, delivery, or application routes run. Mock adapters exist only as injected test fetches; there is no production mock fallback.
-- Real publishing requires `LIVE_TEST_CONFIRM=true`.
+- Normal owner publishing requires `LIVE_TEST_CONFIRM=true`. The temporary Meta
+  review exception is separate: current review mode, exact reviewer UUID,
+  durable `meta_review` context, reviewer-owned Instagram account/post/media
+  and Instagram platform must all match at queue execution. It never applies
+  to owner, anonymous, TikTok or YouTube targets and does not change any
+  provider approval flag.
 - TikTok and YouTube public requests remain invalid while the provider audit flag is false. Postline never silently changes requested public content to private.
 - The consumer writes `publish_request_sent_at` before sending. Instagram additionally writes a durable phase marker immediately before every non-idempotent child, carousel-parent, and final publish request. Read-only polling cannot perform provider writes. A duplicate job cannot automatically resend an unresolved phase; ambiguity becomes `needs_review` and is never blindly republished. Durable provider/validation outcomes are acknowledged, while infrastructure failures receive five bounded Queue retries before the dead-letter queue.
 
@@ -52,6 +74,14 @@ resolver change.
 UploadThing Free source files are public-readable through opaque, hard-to-guess URLs; signed Postline delivery URLs do not make those underlying files private. When all selected targets succeed, media is retained seven days and deleted only after cleanup rechecks database state. Failed, ambiguous, incomplete and pending media is kept until it is safe for owner action. Deletion changes quota accounting only after UploadThing confirms deletion or absence. Metadata, audit records and analytics remain until deletion.
 
 Disconnect requests use an owner/account-bound, expiring server-side transaction. A write-ahead transition allows only one provider revocation request; response loss, refresh, browser restart, and repeated DELETE cannot replay that provider write. Local credential destruction and completion are one database transaction, and the browser rehydrates pending cleanup without receiving credentials. Unknown provider outcomes remain explicitly uncertain; Postline does not reinterpret an error as “already revoked” without documented provider semantics. Installation deletion does not delete already-published provider content; this is stated in the public deletion template.
+
+The same durable disconnect transaction is usable only for a reviewer-owned
+Instagram account while the temporary reviewer role is active. Account,
+media, post, target and analytics reads carry reviewer UUID/context filters
+even though the Worker holds service credentials. Reviewer target failures are
+excluded both by the database notification trigger and by notification
+reconciliation defense in depth. The exact disable and cleanup order is in
+[docs/META_SETUP.md](docs/META_SETUP.md).
 
 ## Dependency and source security
 

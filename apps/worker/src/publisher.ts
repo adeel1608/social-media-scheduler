@@ -17,6 +17,7 @@ import {
 } from "@scheduler/platforms";
 
 import { adapterFor } from "./adapters";
+import { metaReviewTargetAuthorized } from "./auth";
 import { DatabaseRequestError, SupabaseRest } from "./database";
 import { encryptionKeyResolver } from "./encryption";
 import type { Env, QueueJob } from "./env";
@@ -41,6 +42,7 @@ export interface TargetRecord {
   owner_id: string;
   post_id: string;
   platform: Platform;
+  authorization_context?: "owner" | "meta_review";
   status: string;
   metadata: PlatformMetadata;
   selected_media_ids: string[];
@@ -51,11 +53,13 @@ export interface TargetRecord {
   platform_upload_state?: Record<string, any>;
   connected_accounts: Record<string, any>;
   posts: {
+    owner_id: string;
     title: string;
     post_media: Array<{
       sort_order: number;
       media_assets: {
         id: string;
+        owner_id: string;
         object_key: string;
         storage_provider: string;
         provider_file_key: string | null;
@@ -104,7 +108,11 @@ async function enqueueQueueJob(
 }
 
 interface ClaimedQueueJobDependencies {
-  adapterFor: (platform: Platform, env: Env) => PlatformAdapter;
+  adapterFor: (
+    platform: Platform,
+    env: Env,
+    options?: { metaReviewTestingAuthorized?: boolean },
+  ) => PlatformAdapter;
   loadAccessToken: typeof loadAccessToken;
   nextAttempt: typeof nextAttempt;
   recordFinal: typeof recordFinal;
@@ -128,6 +136,18 @@ function claimedQueueJobDependencies(
     now: () => new Date().toISOString(),
     ...overrides,
   };
+}
+
+function publishingAdapter(
+  dependencies: ClaimedQueueJobDependencies,
+  env: Env,
+  target: TargetRecord,
+) {
+  return dependencies.adapterFor(target.platform, env, {
+    metaReviewTestingAuthorized:
+      target.authorization_context === "meta_review" &&
+      metaReviewTargetAuthorized(env, target),
+  });
 }
 
 interface QueueJobDependencies {
@@ -166,7 +186,7 @@ async function loadTarget(
   id: string,
 ): Promise<TargetRecord | null> {
   const rows = await db.select<TargetRecord[]>(
-    `post_targets?id=eq.${encodeURIComponent(id)}&select=*,connected_accounts(*),posts(title,post_media(sort_order,media_assets(*)))&limit=1`,
+    `post_targets?id=eq.${encodeURIComponent(id)}&select=*,connected_accounts(*),posts(owner_id,title,post_media(sort_order,media_assets(*)))&limit=1`,
   );
   return rows[0] ?? null;
 }
@@ -335,6 +355,7 @@ async function recordFinal(
       safeMessage:
         result.error?.message ?? "The platform result could not be confirmed.",
       attempt: attempt.number,
+      authorizationContext: target.authorization_context ?? "owner",
     });
   }
 }
@@ -508,7 +529,37 @@ export async function processClaimedQueueJob(
     ["published", "failed", "needs_review", "cancelled"].includes(target.status)
   )
     return queueResult(target, "duplicate_delivery");
-  if (env.LIVE_TEST_CONFIRM !== "true") {
+  const metaReviewTarget = target.authorization_context === "meta_review";
+  if (metaReviewTarget && !metaReviewTargetAuthorized(env, target)) {
+    const providerWriteMayHaveStarted = Boolean(
+      target.publish_request_sent_at ||
+      target.platform_upload_state?.providerWrite?.requestSentAt,
+    );
+    const blockedState = providerWriteMayHaveStarted
+      ? "needs_review"
+      : "blocked_authorization";
+    await db.update(`post_targets?id=eq.${target.id}`, {
+      status: blockedState,
+      last_error_code: providerWriteMayHaveStarted
+        ? "meta_review_disabled_after_provider_initiation"
+        : env.META_REVIEW_MODE === "true"
+          ? "meta_review_identity_mismatch"
+          : "meta_review_access_disabled",
+      last_error_message: providerWriteMayHaveStarted
+        ? "Meta review access changed after provider publication may have started. Check Instagram before taking any further action."
+        : "Meta review publishing is disabled or the target no longer matches the configured reviewer workspace.",
+      lease_owner: null,
+      lease_expires_at: null,
+    });
+    return queueResult(
+      target,
+      providerWriteMayHaveStarted
+        ? "ambiguous_provider_acceptance"
+        : "validation_or_authorization_failure",
+      blockedState,
+    );
+  }
+  if (!metaReviewTarget && env.LIVE_TEST_CONFIRM !== "true") {
     await db.update(`post_targets?id=eq.${target.id}`, {
       status: "blocked_authorization",
       last_error_code: "live_test_not_confirmed",
@@ -523,7 +574,7 @@ export async function processClaimedQueueJob(
       "blocked_authorization",
     );
   }
-  const adapter = dependencies.adapterFor(target.platform, env);
+  const adapter = publishingAdapter(dependencies, env, target);
   let accessToken: string;
   try {
     accessToken = await dependencies.loadAccessToken(env, target);
@@ -828,9 +879,11 @@ async function continueUploadSafely(
     if (isInfrastructureError(error)) throw error;
     const state = target.platform_upload_state;
     if (!state?.attemptId) throw error;
-    const normalized = dependencies
-      .adapterFor(target.platform, env)
-      .normalizeError(error);
+    const normalized = publishingAdapter(
+      dependencies,
+      env,
+      target,
+    ).normalizeError(error);
     const nextByte = Number(state.nextByte ?? 0);
     const chunkEnd = Math.min(
       nextByte + Number(state.chunkSize ?? 0),
@@ -1100,13 +1153,17 @@ export async function pollStatus(
   }
   let result: PublishResult;
   try {
-    result = await dependencies
-      .adapterFor(target.platform, env)
-      .getPublishStatus(accessToken, statusHandle);
+    result = await publishingAdapter(
+      dependencies,
+      env,
+      target,
+    ).getPublishStatus(accessToken, statusHandle);
   } catch (error) {
-    const normalized = dependencies
-      .adapterFor(target.platform, env)
-      .normalizeError(error);
+    const normalized = publishingAdapter(
+      dependencies,
+      env,
+      target,
+    ).normalizeError(error);
     if (normalized.retryable && !normalized.ambiguous) {
       // Polling can safely continue; this never creates another publish request.
       await dependencies.enqueueQueueJob(
@@ -1223,7 +1280,7 @@ async function executeDurableProviderWrite(
     id: state.attemptId as string,
     number: Number(state.attemptNumber ?? 1),
   };
-  const adapter = dependencies.adapterFor(target.platform, env);
+  const adapter = publishingAdapter(dependencies, env, target);
   if (!adapter.executePublishWrite || !/^[a-z0-9_:-]{1,100}$/.test(phase)) {
     await dependencies.recordFinal(
       env,

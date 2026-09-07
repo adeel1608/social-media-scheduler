@@ -18,4 +18,12 @@ describe("browser Auth hardening", () => {
     expect(authContext).not.toContain("error.message");
     expect(authContext).toContain("The sign-in link could not be sent.");
   });
+
+  it("uses Supabase password authentication with CAPTCHA for the reviewer", () => {
+    expect(authContext).toMatch(/\.auth\.signInWithPassword\s*\(/);
+    expect(authContext).toMatch(/options:\s*\{\s*captchaToken\s*\}/);
+    expect(authContext).toContain("VITE_META_REVIEW_MODE");
+    expect(authContext).toContain('body?.role !== "meta_reviewer"');
+    expect(authContext).not.toMatch(/\.auth\.signUp\s*\(/);
+  });
 });

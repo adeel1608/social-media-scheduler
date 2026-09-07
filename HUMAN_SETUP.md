@@ -137,3 +137,10 @@ baseline.
 The hosted URL is one owner's private installation, not a public signup or a
 shared Postline service. The GitHub repository is the public Postline
 distribution that other owners clone and configure for themselves.
+
+For Meta App Review, do not share the owner login. Use the default-disabled
+temporary reviewer procedure in [docs/META_SETUP.md](docs/META_SETUP.md). It
+requires a manually pre-created Supabase user, an additive migration, matching
+Worker/Pages review-mode configuration, incognito verification, and ordered
+token/media/data cleanup after review. The four provider/live safety flags
+remain false throughout reviewer setup.
