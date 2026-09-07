@@ -3,6 +3,9 @@ import { UTApi } from "uploadthing/server";
 import type { Env } from "./env";
 
 export const ACTIVE_MEDIA_LIMIT_BYTES = Math.floor(1.8 * 1024 ** 3);
+export const REVIEWER_MEDIA_LIMIT_BYTES = Math.floor(
+  ACTIVE_MEDIA_LIMIT_BYTES / 4,
+);
 export const UPLOAD_RESERVATION_SECONDS = 24 * 60 * 60;
 
 export interface StoredMedia {
@@ -16,6 +19,8 @@ export interface StoredMedia {
   size_bytes: number;
   upload_status: string;
   deleted_at: string | null;
+  authorization_context?: "owner" | "meta_review";
+  authorization_generation?: string | null;
 }
 
 export interface UploadThingDeletionClient {
@@ -28,6 +33,8 @@ export interface UploadThingDeletionClient {
 export interface DeliveryReference {
   mediaId: string;
   ownerId: string;
+  authorizationContext?: "owner" | "meta_review";
+  authorizationGeneration?: string | null;
 }
 
 export class MediaStorageError extends Error {
@@ -470,7 +477,14 @@ export async function signedDeliveryUrl(
   const ttl = Math.max(60, Math.min(Math.floor(expiresIn), 3_600));
   const expires = Math.floor(Date.now() / 1_000) + ttl;
   const encodedMediaId = base64UrlEncode(
-    encoder.encode(`${reference.ownerId}:${reference.mediaId}`),
+    encoder.encode(
+      JSON.stringify({
+        ownerId: reference.ownerId,
+        mediaId: reference.mediaId,
+        context: reference.authorizationContext ?? "owner",
+        generation: reference.authorizationGeneration ?? null,
+      }),
+    ),
   );
   const base = env.WORKER_PUBLIC_URL.endsWith("/")
     ? env.WORKER_PUBLIC_URL
@@ -504,15 +518,42 @@ export async function verifyDeliveryRequest(
     const decoded = new TextDecoder("utf-8", { fatal: true }).decode(
       base64UrlDecode(encodedMediaId),
     );
-    const [ownerId, mediaId, extra] = decoded.split(":");
+    let ownerId: unknown;
+    let mediaId: unknown;
+    let authorizationContext: unknown = "owner";
+    let authorizationGeneration: unknown = null;
+    if (decoded.startsWith("{")) {
+      const value = JSON.parse(decoded) as Record<string, unknown>;
+      ({
+        ownerId,
+        mediaId,
+        context: authorizationContext,
+        generation: authorizationGeneration,
+      } = value);
+    } else {
+      // Existing URLs expire within one hour, so retain owner-only compatibility during rollout.
+      [ownerId, mediaId] = decoded.split(":");
+      if (decoded.split(":").length !== 2) return null;
+    }
     const uuid =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    return !extra &&
-      ownerId &&
-      mediaId &&
+    return typeof ownerId === "string" &&
+      typeof mediaId === "string" &&
       uuid.test(ownerId) &&
-      uuid.test(mediaId)
-      ? { ownerId, mediaId }
+      uuid.test(mediaId) &&
+      ["owner", "meta_review"].includes(String(authorizationContext)) &&
+      (authorizationContext === "owner" ||
+        (typeof authorizationGeneration === "string" &&
+          uuid.test(authorizationGeneration)))
+      ? {
+          ownerId,
+          mediaId,
+          authorizationContext: authorizationContext as "owner" | "meta_review",
+          authorizationGeneration:
+            typeof authorizationGeneration === "string"
+              ? authorizationGeneration
+              : null,
+        }
       : null;
   } catch {
     return null;

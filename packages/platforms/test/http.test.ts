@@ -7,6 +7,47 @@ import {
 } from "../src/http";
 
 describe("platform error sanitization", () => {
+  it.each(["read", "idempotent", "publish"] as const)(
+    "keeps the %s deadline active after headers arrive",
+    async (operation) => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("{"));
+            },
+          }),
+        ),
+      );
+      await expect(
+        jsonRequest(
+          fetcher,
+          "https://provider.example/status",
+          { operation },
+          5,
+        ),
+      ).rejects.toMatchObject({
+        code: "network_error",
+        ambiguous: operation === "publish",
+        retryable: operation !== "publish",
+      });
+    },
+  );
+
+  it("bounds response bodies without leaking their contents", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("SYNTHETIC".repeat(150_000)));
+    await expect(
+      jsonRequest(fetcher, "https://provider.example/publish", {
+        operation: "publish",
+      }),
+    ).rejects.toMatchObject({
+      code: "network_error",
+      ambiguous: true,
+      message: "Network request failed",
+    });
+  });
   it("redacts credentials and URLs before errors are persisted or emailed", () => {
     const normalized = genericNormalizeError({
       status: 400,

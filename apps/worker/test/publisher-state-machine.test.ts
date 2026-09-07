@@ -9,6 +9,10 @@ import {
   type TargetRecord,
 } from "../src/publisher";
 import { QueueInfrastructureError } from "../src/queue-errors";
+import {
+  PublicationDatabase,
+  PublicationFenceLostError,
+} from "../src/publication-database";
 
 const job: QueueJob = {
   targetId: "22222222-2222-4222-8222-222222222222",
@@ -43,6 +47,26 @@ class FakeDatabase {
   readonly updates: Array<{ path: string; body: Record<string, unknown> }> = [];
   failUpdate?: (path: string, body: Record<string, unknown>) => boolean;
   claimResult: Array<{ id: string }> = [{ id: job.targetId }];
+  version = 1;
+
+  async rpc<T = unknown>(name: string, body: Record<string, any>) {
+    if (name === "claim_publication_target") return this.claimResult as T;
+    if (name === "transition_publication_target") {
+      this.version += 1;
+      return [
+        {
+          id: job.targetId,
+          row_version: this.version,
+          lease_owner:
+            body.p_patch.lease_owner === null ? null : body.p_lease_owner,
+          status: body.p_patch.status ?? body.p_expected_status,
+          platform_upload_state:
+            body.p_patch.platform_upload_state ?? body.p_expected_upload_state,
+        },
+      ] as T;
+    }
+    throw new Error(`unexpected rpc ${name}`);
+  }
 
   async update<T = unknown>(path: string, body: Record<string, unknown>) {
     this.updates.push({ path, body });
@@ -107,6 +131,142 @@ function dependencies(platformAdapter: PlatformAdapter) {
 }
 
 describe("publish queue operation-aware state machine", () => {
+  it("does not call a provider when the write-ahead CAS returns zero rows", async () => {
+    const raw = {
+      rpc: vi.fn(async (name: string, body: Record<string, any>) => {
+        if (name !== "transition_publication_target")
+          throw new Error("unexpected RPC");
+        if (body.p_patch.publish_request_sent_at) return [];
+        return [
+          {
+            ...target(),
+            row_version: body.p_row_version + 1,
+            lease_owner: "lease:one",
+            status: body.p_expected_status,
+            platform_upload_state: body.p_expected_upload_state,
+            connected_accounts: { id: "account-1", credential_version: 0 },
+          },
+        ];
+      }),
+      request: vi.fn(),
+      update: vi.fn(),
+    } as unknown as SupabaseRest;
+    const snapshot = target({
+      row_version: 1,
+      lease_owner: "lease:one",
+      connected_accounts: {
+        id: "account-1",
+        credential_version: 0,
+        connection_status: "connected",
+        remote_account_id: "creator-1",
+      },
+    });
+    const fenced = new PublicationDatabase(env, raw, snapshot, "lease:one");
+    const platformAdapter = adapter();
+    await expect(
+      processClaimedQueueJob(
+        env,
+        fenced,
+        job,
+        snapshot,
+        dependencies(platformAdapter),
+      ),
+    ).rejects.toBeInstanceOf(PublicationFenceLostError);
+    expect(platformAdapter.publish).not.toHaveBeenCalled();
+  });
+
+  it("allows at most one provider write across overlapping workers and lease takeover", async () => {
+    let resolveProvider!: (value: any) => void;
+    const providerResult = new Promise<any>((resolve) => {
+      resolveProvider = resolve;
+    });
+    const platformAdapter = adapter({ publish: vi.fn(() => providerResult) });
+    const row = target({
+      row_version: 0,
+      lease_owner: null,
+      connected_accounts: {
+        id: "account-1",
+        credential_version: 0,
+        connection_status: "connected",
+        remote_account_id: "creator-1",
+      },
+    });
+    let leaseExpires = 0;
+    const shared = {
+      async rpc<T>(name: string, body: Record<string, any>): Promise<T> {
+        if (name === "claim_publication_target") {
+          if (
+            row.publish_request_sent_at &&
+            !row.platform_upload_state?.statusHandle
+          ) {
+            row.status = "needs_review";
+            row.row_version! += 1;
+            row.lease_owner = null;
+            return [] as T;
+          }
+          if (row.lease_owner && leaseExpires > Date.now()) return [] as T;
+          row.lease_owner = body.p_lease_owner;
+          leaseExpires = Date.now() + 60_000;
+          row.row_version! += 1;
+          return [structuredClone(row)] as T;
+        }
+        if (name === "transition_publication_target") {
+          if (
+            row.lease_owner !== body.p_lease_owner ||
+            row.row_version !== body.p_row_version ||
+            leaseExpires <= Date.now() ||
+            row.status !== body.p_expected_status ||
+            JSON.stringify(row.platform_upload_state ?? null) !==
+              JSON.stringify(body.p_expected_upload_state ?? null)
+          )
+            return [] as T;
+          Object.assign(row, body.p_patch);
+          row.row_version! += 1;
+          return [structuredClone(row)] as T;
+        }
+        throw new Error(`unexpected RPC ${name}`);
+      },
+      async update<T>(path: string, body: Record<string, unknown>): Promise<T> {
+        if (
+          path.includes(
+            `lease_owner=eq.${encodeURIComponent(String(row.lease_owner))}`,
+          )
+        )
+          Object.assign(row, body);
+        return [] as T;
+      },
+      request: vi.fn(),
+    } as unknown as SupabaseRest;
+    const deps = dependencies(platformAdapter);
+    const overrides = {
+      createDatabase: () => shared,
+      loadTarget: vi.fn(async () => structuredClone(row)),
+      processClaimedQueueJob: (
+        e: Env,
+        d: SupabaseRest,
+        j: QueueJob,
+        t: TargetRecord,
+      ) => processClaimedQueueJob(e, d, j, t, deps),
+      leaseOwner: vi
+        .fn()
+        .mockReturnValueOnce("lease:one")
+        .mockReturnValueOnce("lease:two"),
+    };
+    const first = processQueueJob(env, job, overrides);
+    await vi.waitFor(() =>
+      expect(platformAdapter.publish).toHaveBeenCalledTimes(1),
+    );
+    leaseExpires = Date.now() - 1;
+    const second = await processQueueJob(env, job, overrides);
+    expect(second.state).toBe("needs_review");
+    resolveProvider({
+      outcome: "processing",
+      statusHandle: "known-handle",
+      sanitizedResponse: {},
+    });
+    await expect(first).rejects.toBeInstanceOf(QueueInfrastructureError);
+    expect(platformAdapter.publish).toHaveBeenCalledTimes(1);
+  });
   it.each([
     ["timeout", { code: "network_error", retryable: true, ambiguous: false }],
     ["5xx", { status: 503, retryable: true, ambiguous: false }],
@@ -478,7 +638,18 @@ describe("publish queue operation-aware state machine", () => {
     await expect(
       processQueueJob(env, job, {
         createDatabase: () => db as unknown as SupabaseRest,
-        loadTarget: vi.fn(async () => target()),
+        loadTarget: vi.fn(async () =>
+          target({
+            row_version: 1,
+            lease_owner: "queue:test",
+            connected_accounts: {
+              connection_status: "connected",
+              remote_account_id: "creator-1",
+              username: "owner",
+              credential_version: 0,
+            },
+          }),
+        ),
         processClaimedQueueJob: (
           environment,
           database,

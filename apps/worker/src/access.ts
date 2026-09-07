@@ -3,6 +3,7 @@ import type { Context, Next } from "hono";
 
 import type { Env } from "./env";
 import { metaReviewerConfiguration } from "./env";
+import { requireReviewerAuthorization } from "./review-authorization";
 
 export type AccessRole = "owner" | "meta_reviewer";
 
@@ -10,6 +11,7 @@ export type Variables = {
   user: AuthenticatedUser;
   jwt: string;
   accessRole: AccessRole;
+  reviewGeneration: string | undefined;
 };
 
 export type WorkspaceAuthentication =
@@ -18,6 +20,7 @@ export type WorkspaceAuthentication =
       user: AuthenticatedUser;
       jwt: string;
       accessRole: AccessRole;
+      reviewGeneration?: string;
     }
   | { authenticated: false; error: string; status: 401 | 403 };
 
@@ -138,7 +141,21 @@ export async function authenticateWorkspaceRequest(
     authentication.user.email?.trim().toLowerCase() === reviewer.email &&
     jwtHasAuthenticationMethod(authentication.jwt, "password")
   ) {
-    return { ...authentication, accessRole: "meta_reviewer" };
+    try {
+      const reviewGeneration = await requireReviewerAuthorization(
+        env,
+        authentication.user.id,
+        undefined,
+        fetcher,
+      );
+      return {
+        ...authentication,
+        accessRole: "meta_reviewer",
+        reviewGeneration,
+      };
+    } catch {
+      return { authenticated: false, error: "access_denied", status: 403 };
+    }
   }
 
   return { authenticated: false, error: "access_denied", status: 403 };
@@ -172,6 +189,7 @@ export async function workspaceAuth(
   c.set("user", authentication.user);
   c.set("jwt", authentication.jwt);
   c.set("accessRole", authentication.accessRole);
+  c.set("reviewGeneration", authentication.reviewGeneration);
   await next();
 }
 

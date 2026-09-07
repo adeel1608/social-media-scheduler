@@ -10,6 +10,7 @@ import type { Env } from "../src/env";
 
 const ownerId = "11111111-1111-4111-8111-111111111111";
 const reviewerId = "22222222-2222-4222-8222-222222222222";
+const generation = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 function env(overrides: Partial<Env> = {}): Env {
   return {
@@ -38,9 +39,23 @@ function request(authenticationMethod = "password") {
 }
 
 function userResponse(id: string, email: string) {
-  return vi.fn(async () =>
-    Response.json({ id, email, exp: Math.floor(Date.now() / 1_000) + 600 }),
-  );
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/auth/v1/admin/users/"))
+      return Response.json({
+        id,
+        email,
+        email_confirmed_at: new Date().toISOString(),
+        banned_until: null,
+      });
+    if (url.endsWith("/rest/v1/rpc/current_meta_review_authorization"))
+      return Response.json({ generation });
+    return Response.json({
+      id,
+      email,
+      exp: Math.floor(Date.now() / 1_000) + 600,
+    });
+  });
 }
 
 describe("workspace authentication", () => {
@@ -64,6 +79,7 @@ describe("workspace authentication", () => {
     ).resolves.toMatchObject({
       authenticated: true,
       accessRole: "meta_reviewer",
+      reviewGeneration: generation,
     });
 
     for (const [id, email] of [

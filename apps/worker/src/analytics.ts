@@ -5,6 +5,10 @@ import { SupabaseRest } from "./database";
 import { encryptionKeyResolver } from "./encryption";
 import type { Env } from "./env";
 import { metaReviewerConfiguration } from "./env";
+import {
+  ReviewerDatabase,
+  requireReviewerAuthorization,
+} from "./review-authorization";
 
 interface AnalyticsSyncScope {
   authorizationContext?: "owner" | "meta_review";
@@ -16,7 +20,8 @@ export async function syncAnalyticsBatch(
   limit = 10,
   scope: AnalyticsSyncScope = { authorizationContext: "owner" },
 ): Promise<number> {
-  const db = new SupabaseRest(env);
+  let db = new SupabaseRest(env);
+  let generation: string | undefined;
   const authorizationContext = scope.authorizationContext ?? "owner";
   if (authorizationContext === "meta_review") {
     const reviewer = metaReviewerConfiguration(env);
@@ -27,6 +32,8 @@ export async function syncAnalyticsBatch(
     ) {
       return 0;
     }
+    generation = await requireReviewerAuthorization(env, reviewer.userId);
+    db = new ReviewerDatabase(env, reviewer.userId, generation);
   }
   const ownerFilter = scope.ownerId
     ? `&owner_id=eq.${encodeURIComponent(scope.ownerId)}`
@@ -51,6 +58,10 @@ export async function syncAnalyticsBatch(
       ) {
         continue;
       }
+      if (authorizationContext === "meta_review") {
+        if (account.authorization_generation !== generation) continue;
+        await requireReviewerAuthorization(env, target.owner_id, generation);
+      }
       const accessToken = await decryptSecret(
         {
           ciphertext: account.encrypted_access_token,
@@ -61,6 +72,8 @@ export async function syncAnalyticsBatch(
         encryptionKeyResolver(env),
       );
       const adapter = adapterFor(target.platform, env);
+      if (authorizationContext === "meta_review")
+        await requireReviewerAuthorization(env, target.owner_id, generation);
       const metrics = await adapter.fetchAnalytics({
         accountId: account.remote_account_id,
         accessToken,

@@ -6,9 +6,12 @@ import { oauthStateAuthorizationValid } from "../src/oauth-routes";
 
 const reviewerId = "22222222-2222-4222-8222-222222222222";
 const ownerId = "11111111-1111-4111-8111-111111111111";
+const generation = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const passwordPayload = btoa(
   JSON.stringify({
     amr: [{ method: "password", timestamp: 1_788_000_000 }],
+    session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    exp: Math.floor(Date.now() / 1_000) + 600,
   }),
 )
   .replace(/\+/g, "-")
@@ -41,6 +44,15 @@ function reviewerFetch(databaseRows: unknown[] = []) {
         exp: Math.floor(Date.now() / 1_000) + 600,
       });
     }
+    if (url.includes("/auth/v1/admin/users/"))
+      return Response.json({
+        id: reviewerId,
+        email: "reviewer@postline.dev",
+        email_confirmed_at: new Date().toISOString(),
+        banned_until: null,
+      });
+    if (url.endsWith("/rest/v1/rpc/current_meta_review_authorization"))
+      return Response.json({ generation });
     databaseUrls.push(url);
     return Response.json(databaseRows);
   });
@@ -148,6 +160,15 @@ describe("Meta reviewer HTTP isolation", () => {
             exp: Math.floor(Date.now() / 1_000) + 600,
           });
         }
+        if (url.includes("/auth/v1/admin/users/"))
+          return Response.json({
+            id: reviewerId,
+            email: "reviewer@postline.dev",
+            email_confirmed_at: new Date().toISOString(),
+            banned_until: null,
+          });
+        if (url.endsWith("/rest/v1/rpc/current_meta_review_authorization"))
+          return Response.json({ generation });
         if (url.includes("/rest/v1/connected_accounts?")) {
           return Response.json([
             {
@@ -232,7 +253,7 @@ describe("reviewer OAuth state binding", () => {
     ).toBe(false);
   });
 
-  it("rejects a replay before decrypting state or contacting Meta", async () => {
+  it("rejects a callback without its browser cookie before database or Meta access", async () => {
     const urls: string[] = [];
     vi.stubGlobal(
       "fetch",
@@ -267,10 +288,11 @@ describe("reviewer OAuth state binding", () => {
       undefined,
       environment,
     );
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(403);
     expect(await response.json()).toEqual({
-      error: "oauth_state_already_consumed",
+      error: "invalid_oauth_browser_binding",
     });
+    expect(urls).toEqual([]);
     expect(containsInstagramGraphRequest(urls)).toBe(false);
   });
 
@@ -311,7 +333,7 @@ describe("reviewer OAuth state binding", () => {
     );
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({
-      error: "reviewer_oauth_not_authorized",
+      error: "invalid_oauth_browser_binding",
     });
     expect(containsInstagramGraphRequest(urls)).toBe(false);
   });

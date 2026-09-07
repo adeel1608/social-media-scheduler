@@ -5,8 +5,15 @@ import type { SupabaseRest } from "./database";
 import { encryptionKeyResolver } from "./encryption";
 import type { Env } from "./env";
 import { logWorkerError } from "./logging";
+import {
+  requireReviewerAuthorization,
+  ReviewerAuthorizationError,
+} from "./review-authorization";
 
 export interface RevocableAccount {
+  owner_id?: string;
+  authorization_context?: "owner" | "meta_review";
+  authorization_generation?: string | null;
   platform: Platform;
   encrypted_access_token: string;
   access_token_nonce: string;
@@ -148,6 +155,17 @@ export async function disconnectAccountDurably(
   account: RevocableAccount,
   dependencies: RevocationDependencies = defaultRevocationDependencies(env, db),
 ): Promise<DurableDisconnectResult> {
+  const requireCurrent = async () => {
+    if (account.authorization_context !== "meta_review") return;
+    if (!account.authorization_generation || account.owner_id !== ownerId)
+      throw new ReviewerAuthorizationError();
+    await requireReviewerAuthorization(
+      env,
+      ownerId,
+      account.authorization_generation,
+    );
+  };
+  await requireCurrent();
   let transaction = await dependencies.begin(accountId, ownerId);
   if (transaction.state === "completed")
     return resultForTransaction(transaction, false);
@@ -156,6 +174,7 @@ export async function disconnectAccountDurably(
 
   // Decrypt before the write-ahead boundary. If this fails, a later request can
   // safely retry without any provider request having been attempted.
+  await requireCurrent();
   const accessToken = await dependencies.decrypt(account);
   transaction = await dependencies.markRevocationStarted(
     accountId,
@@ -165,8 +184,10 @@ export async function disconnectAccountDurably(
   if (!transaction.should_revoke)
     return resultForTransaction(transaction, false);
 
-  // markRevocationStarted is intentionally the final await before revocation.
+  // The durable marker prevents repeating revocation even if authorization is
+  // lost at this final boundary. The user can later resume local-only cleanup.
   try {
+    await requireCurrent();
     await dependencies.disconnect(account.platform, accessToken);
   } catch {
     try {

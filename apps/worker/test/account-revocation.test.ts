@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   confirmDurableAccountDisconnect,
@@ -12,6 +12,7 @@ import type { Env } from "../src/env";
 const accountId = "11111111-1111-4111-8111-111111111111";
 const ownerId = "22222222-2222-4222-8222-222222222222";
 const operationId = "33333333-3333-4333-8333-333333333333";
+afterEach(() => vi.unstubAllGlobals());
 
 const account = {
   platform: "tiktok" as const,
@@ -55,6 +56,38 @@ function dependencies() {
 }
 
 describe("durable account disconnect", () => {
+  it("performs no database, decryption, or provider action after reviewer revocation", async () => {
+    const deps = dependencies();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 503 })),
+    );
+    await expect(
+      disconnectAccountDurably(
+        {
+          META_REVIEW_MODE: "true",
+          META_REVIEWER_USER_ID: ownerId,
+          META_REVIEWER_EMAIL: "reviewer@postline.dev",
+          SUPABASE_URL: "https://project.supabase.co",
+          SUPABASE_SERVICE_ROLE_KEY: "service-key",
+        } as Env,
+        {} as SupabaseRest,
+        accountId,
+        ownerId,
+        {
+          ...account,
+          platform: "instagram",
+          owner_id: ownerId,
+          authorization_context: "meta_review",
+          authorization_generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
+        deps,
+      ),
+    ).rejects.toThrow("Reviewer authorization");
+    expect(deps.begin).not.toHaveBeenCalled();
+    expect(deps.decrypt).not.toHaveBeenCalled();
+    expect(deps.disconnect).not.toHaveBeenCalled();
+  });
   it("survives response loss and does not repeat provider revocation", async () => {
     const deps = dependencies();
 

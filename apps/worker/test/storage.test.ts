@@ -121,7 +121,12 @@ describe("signed provider delivery", () => {
         signed.searchParams.get("expires") ?? undefined,
         signed.searchParams.get("signature") ?? undefined,
       ),
-    ).toEqual({ mediaId, ownerId });
+    ).toEqual({
+      mediaId,
+      ownerId,
+      authorizationContext: "owner",
+      authorizationGeneration: null,
+    });
     expect(
       await verifyDeliveryRequest(
         env,

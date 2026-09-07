@@ -31,6 +31,12 @@ import {
 } from "./queue-errors";
 import { recoveryModeForTarget } from "./queue-recovery";
 import {
+  PublicationDatabase,
+  PublicationFenceLostError,
+  publicationAuthorizationArguments,
+} from "./publication-database";
+import { requireReviewerAuthorization } from "./review-authorization";
+import {
   fetchMediaBody,
   fetchMediaRange,
   MediaStorageError,
@@ -43,6 +49,9 @@ export interface TargetRecord {
   post_id: string;
   platform: Platform;
   authorization_context?: "owner" | "meta_review";
+  authorization_generation?: string | null;
+  row_version?: number;
+  lease_owner?: string | null;
   status: string;
   metadata: PlatformMetadata;
   selected_media_ids: string[];
@@ -87,6 +96,7 @@ function queueResult(
 function isInfrastructureError(error: unknown): boolean {
   return (
     error instanceof DatabaseRequestError ||
+    error instanceof PublicationFenceLostError ||
     error instanceof MediaStorageError ||
     error instanceof QueueInfrastructureError
   );
@@ -194,10 +204,20 @@ async function loadTarget(
 async function loadAccessToken(
   env: Env,
   target: TargetRecord,
+  db?: SupabaseRest,
 ): Promise<string> {
   const account = target.connected_accounts;
   if (!account || account.connection_status !== "connected")
     throw new Error("Platform account is not connected");
+  if (target.authorization_context === "meta_review") {
+    if (!target.authorization_generation) throw new PublicationFenceLostError();
+    await requireReviewerAuthorization(
+      env,
+      target.owner_id,
+      target.authorization_generation,
+    );
+  }
+  if (db instanceof PublicationDatabase) await db.assertCurrent();
   const accessToken = await decryptSecret(
     {
       ciphertext: account.encrypted_access_token,
@@ -223,6 +243,9 @@ async function loadAccessToken(
           encryptionKeyResolver(env),
         )
       : undefined;
+  if (!(db instanceof PublicationDatabase))
+    throw new PublicationFenceLostError();
+  await db.assertCurrent();
   const refreshed = await adapterFor(target.platform, env).refreshAccessToken({
     accessToken,
     ...(refreshToken ? { refreshToken } : {}),
@@ -246,7 +269,9 @@ async function loadAccessToken(
         env.TOKEN_ENCRYPTION_KEY_VERSION,
       )
     : null;
-  await new SupabaseRest(env).update(`connected_accounts?id=eq.${account.id}`, {
+  if (!(db instanceof PublicationDatabase))
+    throw new PublicationFenceLostError();
+  await db.update(`connected_accounts?id=eq.${account.id}`, {
     encrypted_access_token: encryptedAccess.ciphertext,
     access_token_nonce: encryptedAccess.nonce,
     ...(encryptedRefresh
@@ -427,6 +452,10 @@ async function publishInputForTarget(
       dependencies.signedDeliveryUrl(env, {
         mediaId: item.id,
         ownerId: target.owner_id,
+        authorizationContext: target.authorization_context ?? "owner",
+        ...(target.authorization_generation
+          ? { authorizationGeneration: target.authorization_generation }
+          : {}),
       }),
     ),
   );
@@ -456,16 +485,15 @@ export async function processQueueJob(
   };
   const db = dependencies.createDatabase(env);
   const leaseOwner = dependencies.leaseOwner();
-  const now = dependencies.now();
   let target: TargetRecord | null = null;
   try {
-    const claimed = await db.update<Array<{ id: string }>>(
-      `post_targets?id=eq.${encodeURIComponent(job.targetId)}&status=in.(queued,publishing,processing)&or=(lease_expires_at.is.null,lease_expires_at.lte.${encodeURIComponent(now.toISOString())})`,
+    const claimed = await db.rpc<Array<{ id: string }>>(
+      "claim_publication_target",
       {
-        lease_owner: leaseOwner,
-        lease_expires_at: new Date(
-          now.getTime() + 10 * 60 * 1_000,
-        ).toISOString(),
+        p_target_id: job.targetId,
+        p_lease_owner: leaseOwner,
+        p_authorization_generation: job.authorizationGeneration ?? null,
+        ...publicationAuthorizationArguments(env),
       },
     );
     if (!claimed.length) {
@@ -488,7 +516,8 @@ export async function processQueueJob(
     if (!target) {
       return { classification: "duplicate_delivery", state: "not_found" };
     }
-    return await dependencies.processClaimedQueueJob(env, db, job, target);
+    const fenced = new PublicationDatabase(env, db, target, leaseOwner);
+    return await dependencies.processClaimedQueueJob(env, fenced, job, target);
   } catch (error) {
     if (error instanceof QueueInfrastructureError) {
       throw new QueueInfrastructureError(
@@ -577,7 +606,8 @@ export async function processClaimedQueueJob(
   const adapter = publishingAdapter(dependencies, env, target);
   let accessToken: string;
   try {
-    accessToken = await dependencies.loadAccessToken(env, target);
+    if (db instanceof PublicationDatabase) await db.assertCurrent();
+    accessToken = await dependencies.loadAccessToken(env, target, db);
   } catch (error) {
     if (
       isInfrastructureError(error) ||
@@ -680,6 +710,7 @@ export async function processClaimedQueueJob(
     dependencies,
   );
   if (adapter.preflightPublish) {
+    if (db instanceof PublicationDatabase) await db.assertCurrent();
     let preflightResult: PublishResult | null;
     try {
       preflightResult = await adapter.preflightPublish(publishInput);
@@ -792,6 +823,9 @@ export async function processClaimedQueueJob(
       env,
       {
         targetId: target.id,
+        ...(target.authorization_generation
+          ? { authorizationGeneration: target.authorization_generation }
+          : {}),
         mode: "upload",
         requestedAt: new Date().toISOString(),
       },
@@ -843,6 +877,9 @@ export async function processClaimedQueueJob(
       env,
       {
         targetId: target.id,
+        ...(target.authorization_generation
+          ? { authorizationGeneration: target.authorization_generation }
+          : {}),
         mode: "poll",
         requestedAt: new Date().toISOString(),
       },
@@ -903,6 +940,9 @@ async function continueUploadSafely(
         env,
         {
           targetId: target.id,
+          ...(target.authorization_generation
+            ? { authorizationGeneration: target.authorization_generation }
+            : {}),
           mode: "upload",
           requestedAt: new Date().toISOString(),
         },
@@ -920,6 +960,9 @@ async function continueUploadSafely(
         env,
         {
           targetId: target.id,
+          ...(target.authorization_generation
+            ? { authorizationGeneration: target.authorization_generation }
+            : {}),
           mode: "poll",
           requestedAt: new Date().toISOString(),
         },
@@ -1008,6 +1051,7 @@ async function continueUpload(
     start,
     endExclusive,
   );
+  if (db instanceof PublicationDatabase) await db.assertCurrent();
   const response = await providerRequest(
     fetch,
     trustedUrl,
@@ -1051,6 +1095,9 @@ async function continueUpload(
       env,
       {
         targetId: target.id,
+        ...(target.authorization_generation
+          ? { authorizationGeneration: target.authorization_generation }
+          : {}),
         mode: "upload",
         requestedAt: new Date().toISOString(),
       },
@@ -1078,6 +1125,9 @@ async function continueUpload(
     env,
     {
       targetId: target.id,
+      ...(target.authorization_generation
+        ? { authorizationGeneration: target.authorization_generation }
+        : {}),
       mode: "poll",
       requestedAt: new Date().toISOString(),
     },
@@ -1152,6 +1202,7 @@ export async function pollStatus(
     return queueResult(target, "ambiguous_provider_acceptance", "needs_review");
   }
   let result: PublishResult;
+  if (db instanceof PublicationDatabase) await db.assertCurrent();
   try {
     result = await publishingAdapter(
       dependencies,
@@ -1170,6 +1221,9 @@ export async function pollStatus(
         env,
         {
           targetId: target.id,
+          ...(target.authorization_generation
+            ? { authorizationGeneration: target.authorization_generation }
+            : {}),
           mode: "poll",
           requestedAt: new Date().toISOString(),
         },
@@ -1231,6 +1285,9 @@ export async function pollStatus(
       env,
       {
         targetId: target.id,
+        ...(target.authorization_generation
+          ? { authorizationGeneration: target.authorization_generation }
+          : {}),
         mode: "poll",
         requestedAt: new Date().toISOString(),
       },
@@ -1244,6 +1301,7 @@ export async function pollStatus(
       target,
       accessToken,
       result.remoteContentId,
+      db,
     );
     if (thumbnailResult) {
       result.sanitizedResponse = {
@@ -1387,6 +1445,9 @@ async function executeDurableProviderWrite(
         env,
         {
           targetId: target.id,
+          ...(target.authorization_generation
+            ? { authorizationGeneration: target.authorization_generation }
+            : {}),
           mode: "poll",
           requestedAt: new Date().toISOString(),
         },
@@ -1416,6 +1477,7 @@ async function uploadYouTubeThumbnailIfSelected(
   target: TargetRecord,
   accessToken: string,
   videoId: string,
+  db: SupabaseRest,
 ): Promise<"uploaded" | "not_permitted" | null> {
   if (target.platform !== "youtube") return null;
   const metadata = youTubeMetadataSchema.safeParse(target.metadata);
@@ -1433,6 +1495,7 @@ async function uploadYouTubeThumbnailIfSelected(
       ...thumbnail,
       owner_id: target.owner_id,
     });
+    if (db instanceof PublicationDatabase) await db.assertCurrent();
     await adapter.uploadThumbnail(
       accessToken,
       videoId,

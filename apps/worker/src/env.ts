@@ -37,6 +37,7 @@ export interface Env {
 
 export interface QueueJob {
   targetId: string;
+  authorizationGeneration?: string;
   mode: "publish" | "upload" | "poll";
   requestedAt: string;
 }

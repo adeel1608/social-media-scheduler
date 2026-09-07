@@ -15,7 +15,12 @@ import {
 import { ownerDatabase, SupabaseRest } from "./database";
 import type { Env } from "./env";
 import {
+  ReviewerDatabase,
+  requireReviewerAuthorization,
+} from "./review-authorization";
+import {
   ACTIVE_MEDIA_LIMIT_BYTES,
+  REVIEWER_MEDIA_LIMIT_BYTES,
   deleteUploadThingFile,
   validateUploadThingUrl,
 } from "./storage";
@@ -70,6 +75,8 @@ export interface UploadThingRouteDependencies {
       sizeBytes: number;
       mimeType: string;
       checksum: string;
+      authorizationContext?: "owner" | "meta_review";
+      authorizationGeneration?: string;
     },
   ): Promise<string>;
   deleteFile(env: Env, fileKey: string): Promise<unknown>;
@@ -87,7 +94,11 @@ const defaultDependencies: UploadThingRouteDependencies = {
             p_window_seconds: 60,
           },
         )
-      : new SupabaseRest(env).rpc<boolean>("consume_meta_review_rate_limit", {
+      : new ReviewerDatabase(
+          env,
+          authentication.user.id,
+          authentication.reviewGeneration!,
+        ).rpc<boolean>("consume_meta_review_rate_limit", {
           p_reviewer_id: authentication.user.id,
           p_route: "upload_start",
           p_limit: 30,
@@ -107,12 +118,25 @@ const defaultDependencies: UploadThingRouteDependencies = {
           "reserve_uploadthing_media",
           parameters,
         )
-      : new SupabaseRest(env).rpc<string>("reserve_meta_review_media", {
+      : new ReviewerDatabase(
+          env,
+          authentication.user.id,
+          authentication.reviewGeneration!,
+        ).rpc<string>("reserve_meta_review_media", {
           p_reviewer_id: authentication.user.id,
           ...parameters,
         });
   },
   async finalize(env, input) {
+    if (input.authorizationContext === "meta_review") {
+      if (!input.authorizationGeneration)
+        throw new Error("Upload authorization unavailable.");
+      await requireReviewerAuthorization(
+        env,
+        input.ownerId,
+        input.authorizationGeneration,
+      );
+    }
     return new SupabaseRest(env).rpc<string>("complete_uploadthing_media", {
       p_media_id: input.mediaId,
       p_owner_id: input.ownerId,
@@ -170,10 +194,15 @@ export async function authorizeUploadInitiation(
       message: issues.map((issue) => issue.message).join(" "),
     });
   }
-  if (input.sizeBytes > ACTIVE_MEDIA_LIMIT_BYTES) {
+  if (
+    input.sizeBytes >
+    (authentication.accessRole === "meta_reviewer"
+      ? REVIEWER_MEDIA_LIMIT_BYTES
+      : ACTIVE_MEDIA_LIMIT_BYTES)
+  ) {
     throw new UploadThingError({
       code: "TOO_LARGE",
-      message: "This file exceeds Postline's 1.8 GiB active-media safety cap.",
+      message: "This file exceeds the workspace media allocation.",
     });
   }
   const allowed = await dependencies.consumeRateLimit(env, authentication);
@@ -195,7 +224,7 @@ export async function authorizeUploadInitiation(
       throw new UploadThingError({
         code: "FILE_LIMIT_EXCEEDED",
         message:
-          "Upload rejected: active and reserved media would exceed Postline's 1.8 GiB limit. Delete unused media or wait for eligible cleanup.",
+          "Upload rejected: the media allocation would be exceeded. Delete unused media or wait for eligible cleanup.",
       });
     }
     throw new UploadThingError({
@@ -205,6 +234,13 @@ export async function authorizeUploadInitiation(
   }
   return {
     ownerId: authentication.user.id,
+    authorizationContext:
+      authentication.accessRole === "meta_reviewer"
+        ? ("meta_review" as const)
+        : ("owner" as const),
+    ...(authentication.reviewGeneration
+      ? { authorizationGeneration: authentication.reviewGeneration }
+      : {}),
     mediaId,
     [UTFiles]: [{ ...file, customId: mediaId }],
   };
@@ -212,7 +248,12 @@ export async function authorizeUploadInitiation(
 
 export async function completeUploadThingCallback(
   env: Env,
-  metadata: { ownerId: string; mediaId: string },
+  metadata: {
+    ownerId: string;
+    mediaId: string;
+    authorizationContext?: "owner" | "meta_review";
+    authorizationGeneration?: string;
+  },
   file: UploadedFile,
   dependencies: UploadThingRouteDependencies = defaultDependencies,
 ) {
@@ -228,6 +269,12 @@ export async function completeUploadThingCallback(
     sizeBytes: file.size,
     mimeType: file.type || "application/octet-stream",
     checksum: file.fileHash,
+    ...(metadata.authorizationContext
+      ? { authorizationContext: metadata.authorizationContext }
+      : {}),
+    ...(metadata.authorizationGeneration
+      ? { authorizationGeneration: metadata.authorizationGeneration }
+      : {}),
   });
   if (result === "completed" || result === "already_complete") {
     return {

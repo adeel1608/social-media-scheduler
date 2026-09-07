@@ -1,4 +1,4 @@
-import { redactSecrets, type Platform } from "@scheduler/shared";
+import { boundedFetch, redactSecrets, type Platform } from "@scheduler/shared";
 
 import type { Fetch, PlatformError } from "./types";
 
@@ -73,23 +73,11 @@ export async function providerRequest(
   init: ProviderRequestInit,
   timeoutMs = 15_000,
 ): Promise<Response> {
-  const controller = new AbortController();
-  const upstreamSignal = init.signal;
-  const forwardAbort = () => controller.abort(upstreamSignal?.reason);
-  if (upstreamSignal?.aborted) forwardAbort();
-  else upstreamSignal?.addEventListener("abort", forwardAbort, { once: true });
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const { operation: _operation, ...requestInit } = init;
   try {
-    return await fetcher(url, {
-      ...requestInit,
-      signal: controller.signal,
-    });
+    return await boundedFetch(fetcher, url, requestInit, timeoutMs);
   } catch {
     throw providerNetworkError(init.operation);
-  } finally {
-    clearTimeout(timeout);
-    upstreamSignal?.removeEventListener("abort", forwardAbort);
   }
 }
 

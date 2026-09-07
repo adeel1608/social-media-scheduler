@@ -6,7 +6,7 @@ import {
   securityHeaders,
   type PlatformMetadata,
 } from "@scheduler/shared";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 
 import { syncAnalyticsBatch } from "./analytics";
@@ -25,10 +25,15 @@ import {
   configurationStatus,
   assertProductionConfigured,
   ownerSetupStatus,
+  metaReviewerConfiguration,
   type Env,
   type QueueJob,
 } from "./env";
 import { ownerDatabase, SupabaseRest } from "./database";
+import {
+  ReviewerDatabase,
+  requireReviewerAuthorization,
+} from "./review-authorization";
 import oauthRoutes from "./oauth-routes";
 import { logWorkerError } from "./logging";
 import { retryFailedNotifications } from "./notifications";
@@ -47,6 +52,13 @@ import {
 import { handleUploadThingRequest } from "./uploadthing";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
+function serviceDatabase(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+): SupabaseRest {
+  return c.get("accessRole") === "meta_reviewer"
+    ? new ReviewerDatabase(c.env, c.get("user").id, c.get("reviewGeneration")!)
+    : new SupabaseRest(c.env);
+}
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -139,10 +151,26 @@ app.on(["GET", "HEAD"], "/delivery/:encodedKey", async (c) => {
   );
   if (!reference) return c.body(null, 403);
   const rows = await new SupabaseRest(c.env).select<StoredMedia[]>(
-    `media_assets?id=eq.${encodeURIComponent(reference.mediaId)}&owner_id=eq.${encodeURIComponent(reference.ownerId)}&storage_provider=eq.uploadthing&upload_status=eq.complete&deleted_at=is.null&select=id,owner_id,storage_provider,provider_file_key,provider_url,object_key,mime_type,size_bytes,upload_status,deleted_at&limit=1`,
+    `media_assets?id=eq.${encodeURIComponent(reference.mediaId)}&owner_id=eq.${encodeURIComponent(reference.ownerId)}&authorization_context=eq.${reference.authorizationContext ?? "owner"}&storage_provider=eq.uploadthing&upload_status=eq.complete&deleted_at=is.null&select=id,owner_id,storage_provider,provider_file_key,provider_url,object_key,mime_type,size_bytes,upload_status,deleted_at,authorization_context,authorization_generation&limit=1`,
   );
   const media = rows[0];
   if (!media) return c.body(null, 404);
+  if (reference.authorizationContext === "meta_review") {
+    if (
+      !reference.authorizationGeneration ||
+      media.authorization_generation !== reference.authorizationGeneration
+    )
+      return c.body(null, 403);
+    try {
+      await requireReviewerAuthorization(
+        c.env,
+        reference.ownerId,
+        reference.authorizationGeneration,
+      );
+    } catch {
+      return c.body(null, 403);
+    }
+  }
   try {
     return await deliveryResponse(
       c.env,
@@ -190,7 +218,7 @@ app.get("/api/storage", async (c) => {
           limit_bytes: number;
         }>
       >("uploadthing_storage_usage", {})
-    : new SupabaseRest(c.env).rpc<
+    : serviceDatabase(c).rpc<
         Array<{
           active_bytes: number;
           reserved_bytes: number;
@@ -214,9 +242,7 @@ app.get("/api/storage", async (c) => {
 
 app.get("/api/accounts", async (c) => {
   const reviewer = c.get("accessRole") === "meta_reviewer";
-  const db = reviewer
-    ? new SupabaseRest(c.env)
-    : ownerDatabase(c.env, c.get("jwt"));
+  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
   const reviewerFilters = reviewer
     ? "&platform=eq.instagram&authorization_context=eq.meta_review"
     : "";
@@ -251,20 +277,18 @@ app.get("/api/accounts", async (c) => {
 
 app.delete("/api/accounts/:id", async (c) => {
   const reviewer = c.get("accessRole") === "meta_reviewer";
-  const db = reviewer
-    ? new SupabaseRest(c.env)
-    : ownerDatabase(c.env, c.get("jwt"));
+  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
   const reviewerFilters = reviewer
     ? "&platform=eq.instagram&authorization_context=eq.meta_review"
     : "";
   const rows = await db.select<RevocableAccount[]>(
-    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}${reviewerFilters}&select=platform,encrypted_access_token,access_token_nonce,encryption_key_version&limit=1`,
+    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}${reviewerFilters}&select=owner_id,platform,authorization_context,authorization_generation,encrypted_access_token,access_token_nonce,encryption_key_version&limit=1`,
   );
   const account = rows[0];
   if (!account) return c.json({ error: "account_not_found" }, 404);
   const result = await disconnectAccountDurably(
     c.env,
-    new SupabaseRest(c.env),
+    serviceDatabase(c),
     c.req.param("id"),
     c.get("user").id,
     account,
@@ -306,7 +330,7 @@ app.post("/api/accounts/:id/disconnect/confirm", async (c) => {
   }
   const confirmationDb =
     c.get("accessRole") === "meta_reviewer"
-      ? new SupabaseRest(c.env)
+      ? serviceDatabase(c)
       : ownerDatabase(c.env, c.get("jwt"));
   if (c.get("accessRole") === "meta_reviewer") {
     const allowedAccount = await confirmationDb.select<Array<{ id: string }>>(
@@ -332,7 +356,7 @@ app.post("/api/accounts/:id/disconnect/confirm", async (c) => {
   if (new Date(transaction.expires_at).getTime() <= Date.now())
     return c.json({ error: "disconnect_cleanup_expired" }, 410);
   const completed = await confirmDurableAccountDisconnect(
-    new SupabaseRest(c.env),
+    serviceDatabase(c),
     accountId,
     ownerId,
     input.operationId,
@@ -380,7 +404,7 @@ app.get("/api/queue", async (c) => {
   ].filter(Boolean);
   const db =
     c.get("accessRole") === "meta_reviewer"
-      ? new SupabaseRest(c.env)
+      ? serviceDatabase(c)
       : ownerDatabase(c.env, c.get("jwt"));
   if (c.get("accessRole") === "meta_reviewer") {
     filters.push(
@@ -402,9 +426,7 @@ app.get("/api/queue", async (c) => {
 
 app.get("/api/analytics", async (c) => {
   const reviewer = c.get("accessRole") === "meta_reviewer";
-  const db = reviewer
-    ? new SupabaseRest(c.env)
-    : ownerDatabase(c.env, c.get("jwt"));
+  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
   const requestedPlatform = c.req.query("platform");
   const platform = platformSchema.safeParse(requestedPlatform);
   if (requestedPlatform && !platform.success)
@@ -440,7 +462,7 @@ app.get("/api/analytics/:targetId", async (c) => {
     return c.json({ error: "invalid_target_id" }, 400);
   const db =
     c.get("accessRole") === "meta_reviewer"
-      ? new SupabaseRest(c.env)
+      ? serviceDatabase(c)
       : ownerDatabase(c.env, c.get("jwt"));
   const reviewer = c.get("accessRole") === "meta_reviewer";
   const platformFilter = reviewer
@@ -514,7 +536,7 @@ app.post("/api/installation/delete", async (c) => {
       },
       409,
     );
-  const serviceDb = new SupabaseRest(c.env);
+  const serviceDb = serviceDatabase(c);
   const accounts = await serviceDb.select<RevocableAccount[]>(
     `connected_accounts?owner_id=eq.${ownerId}&select=platform,encrypted_access_token,access_token_nonce,encryption_key_version`,
   );
@@ -614,9 +636,7 @@ app.post("/api/posts", async (c) => {
   ) {
     return c.json({ error: "reviewer_instagram_target_required" }, 403);
   }
-  const db = reviewer
-    ? new SupabaseRest(c.env)
-    : ownerDatabase(c.env, c.get("jwt"));
+  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
   const mediaRows = await db.select<
     Array<{
       id: string;
@@ -702,9 +722,7 @@ app.post("/api/posts", async (c) => {
 
 app.patch("/api/targets/:id/cancel", async (c) => {
   const reviewer = c.get("accessRole") === "meta_reviewer";
-  const db = reviewer
-    ? new SupabaseRest(c.env)
-    : ownerDatabase(c.env, c.get("jwt"));
+  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
   const reviewerFilter = reviewer
     ? "&platform=eq.instagram&authorization_context=eq.meta_review"
     : "";
@@ -769,17 +787,14 @@ app.post("/api/targets/:id/resolve", async (c) => {
       updated_at: new Date().toISOString(),
     },
   );
-  await updateMediaRetentionForPost(
-    new SupabaseRest(c.env),
-    existing[0]!.post_id,
-  );
+  await updateMediaRetentionForPost(serviceDatabase(c), existing[0]!.post_id);
   return c.json({ ok: true, status: outcome });
 });
 
 app.delete("/api/media/:id", async (c) => {
   const db =
     c.get("accessRole") === "meta_reviewer"
-      ? new SupabaseRest(c.env)
+      ? serviceDatabase(c)
       : ownerDatabase(c.env, c.get("jwt"));
   const rows = await db.select<
     Array<{
@@ -862,15 +877,12 @@ app.delete("/api/media/:id", async (c) => {
 app.post("/api/analytics/sync", async (c) => {
   const reviewer = c.get("accessRole") === "meta_reviewer";
   const allowed = reviewer
-    ? await new SupabaseRest(c.env).rpc<boolean>(
-        "consume_meta_review_rate_limit",
-        {
-          p_reviewer_id: c.get("user").id,
-          p_route: "analytics_sync",
-          p_limit: 5,
-          p_window_seconds: 60,
-        },
-      )
+    ? await serviceDatabase(c).rpc<boolean>("consume_meta_review_rate_limit", {
+        p_reviewer_id: c.get("user").id,
+        p_route: "analytics_sync",
+        p_limit: 5,
+        p_window_seconds: 60,
+      })
     : await ownerDatabase(c.env, c.get("jwt")).rpc<boolean>(
         "consume_rate_limit",
         { p_route: "analytics_sync", p_limit: 5, p_window_seconds: 60 },
@@ -911,32 +923,76 @@ const worker = {
       }),
     );
     const workerId = crypto.randomUUID();
-    const claimed = await db.rpc<Array<{ id: string }>>("claim_due_targets", {
+    const claimed = await db.rpc<
+      Array<{
+        id: string;
+        row_version: number;
+        authorization_generation?: string | null;
+      }>
+    >("claim_due_targets", {
       p_worker_id: workerId,
       p_limit: 100,
       p_lease_seconds: 300,
     });
+    const reviewer = metaReviewerConfiguration(env);
+    if (reviewer.enabled && reviewer.configured) {
+      try {
+        const generation = await requireReviewerAuthorization(
+          env,
+          reviewer.userId,
+        );
+        claimed.push(
+          ...(await db.rpc<
+            Array<{
+              id: string;
+              row_version: number;
+              authorization_generation?: string | null;
+            }>
+          >("claim_meta_review_targets", {
+            p_worker_id: workerId,
+            p_reviewer_id: reviewer.userId,
+            p_reviewer_email: reviewer.email,
+            p_generation: generation,
+            p_limit: 100,
+            p_lease_seconds: 300,
+          })),
+        );
+      } catch {
+        logWorkerError("reviewer_due_claim_skipped");
+      }
+    }
     for (const target of claimed) {
       // Once status is queued, the consumer takes its own atomic lease.
-      await db.update(`post_targets?id=eq.${target.id}`, {
-        lease_owner: null,
-        lease_expires_at: null,
-      });
+      const released = await db.update<Array<{ row_version: number }>>(
+        `post_targets?id=eq.${encodeURIComponent(target.id)}&lease_owner=eq.${encodeURIComponent(workerId)}&row_version=eq.${target.row_version}&status=eq.queued`,
+        {
+          lease_owner: null,
+          lease_expires_at: null,
+        },
+      );
+      if (released.length !== 1) continue;
       try {
         await env.PUBLISH_QUEUE.send({
           targetId: target.id,
+          ...(target.authorization_generation
+            ? { authorizationGeneration: target.authorization_generation }
+            : {}),
           mode: "publish",
           requestedAt: new Date().toISOString(),
         });
       } catch {
         // No provider request exists yet, so the next cron may safely dispatch again.
-        await db.update(`post_targets?id=eq.${target.id}`, {
-          status: "scheduled",
-          last_error_code: "queue_dispatch_failed",
-          last_error_message: "Queue dispatch failed before publication began.",
-          lease_owner: null,
-          lease_expires_at: null,
-        });
+        await db.update(
+          `post_targets?id=eq.${encodeURIComponent(target.id)}&row_version=eq.${released[0]!.row_version}&status=eq.queued&publish_request_sent_at=is.null`,
+          {
+            status: "scheduled",
+            last_error_code: "queue_dispatch_failed",
+            last_error_message:
+              "Queue dispatch failed before publication began.",
+            lease_owner: null,
+            lease_expires_at: null,
+          },
+        );
         logWorkerError("queue_dispatch_failed", { targetId: target.id });
       }
     }
