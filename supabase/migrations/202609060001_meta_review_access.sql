@@ -47,6 +47,17 @@ create index if not exists post_targets_meta_review_owner_status_idx
 on public.post_targets (owner_id, status, scheduled_at_utc)
 where authorization_context = 'meta_review';
 
+-- Owner RPCs such as reserve_uploadthing_media call this deliberately exposed
+-- predicate from security-invoker PL/pgSQL. Permit authenticated sessions to
+-- resolve only that guard; private trigger functions remain non-callable.
+revoke usage on schema app_private from public, anon;
+grant usage on schema app_private to authenticated;
+revoke all on function app_private.audit_target_status_change()
+from public, anon, authenticated;
+revoke all on function app_private.audit_account_connection_change()
+from public, anon, authenticated;
+grant execute on function app_private.is_owner(uuid) to authenticated;
+
 create or replace function public.consume_meta_review_rate_limit(
   p_reviewer_id uuid,
   p_route text,
