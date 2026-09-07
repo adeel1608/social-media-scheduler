@@ -777,6 +777,14 @@ describe.sequential("real disposable Auth and PostgREST", () => {
         anonKey,
       ),
     ).toEqual([]);
+    for (const path of [
+      `/rest/v1/connected_accounts?id=eq.${accountId}&select=id,encrypted_access_token`,
+      `/rest/v1/posts?id=eq.${postId}&select=id,owner_id`,
+      `/rest/v1/post_targets?post_id=eq.${postId}&select=id,lease_owner,authorization_generation`,
+      `/rest/v1/oauth_states?state_hash=eq.${stateHash}&select=id,pending_authorization_code`,
+    ]) {
+      expect(await json(path, {}, replacementJwt, anonKey)).toEqual([]);
+    }
     expect(
       await rpc("consume_oauth_completion", {
         p_completion_handle_hash: completionHash,
