@@ -56,6 +56,16 @@ function apiRequest(path: string, method = "GET") {
   );
 }
 
+function containsInstagramGraphRequest(urls: readonly string[]): boolean {
+  return urls.some((value) => {
+    try {
+      return new URL(value).hostname === "graph.instagram.com";
+    } catch {
+      return false;
+    }
+  });
+}
+
 describe("Meta reviewer HTTP isolation", () => {
   it("returns only the non-sensitive server-derived reviewer role", async () => {
     reviewerFetch();
@@ -261,7 +271,7 @@ describe("reviewer OAuth state binding", () => {
     expect(await response.json()).toEqual({
       error: "oauth_state_already_consumed",
     });
-    expect(urls.some((url) => url.includes("graph.instagram.com"))).toBe(false);
+    expect(containsInstagramGraphRequest(urls)).toBe(false);
   });
 
   it("consumes then rejects reviewer state when review mode is disabled", async () => {
@@ -303,6 +313,6 @@ describe("reviewer OAuth state binding", () => {
     expect(await response.json()).toEqual({
       error: "reviewer_oauth_not_authorized",
     });
-    expect(urls.some((url) => url.includes("graph.instagram.com"))).toBe(false);
+    expect(containsInstagramGraphRequest(urls)).toBe(false);
   });
 });
