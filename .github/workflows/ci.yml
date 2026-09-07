@@ -32,7 +32,7 @@ jobs:
       - run: corepack pnpm test
       - run: corepack pnpm build:verify
       - run: corepack pnpm db:validate
-      - name: Start disposable Supabase and apply all fifteen migrations
+      - name: Start disposable Supabase and apply all seventeen migrations
         run: |
           corepack pnpm exec supabase start > /tmp/postline-supabase-start.log 2>&1
           corepack pnpm exec supabase migration list --local

@@ -17,6 +17,20 @@ const metaReviewMigrationFile = "202609060001_meta_review_access.sql";
 const metaReviewMigrationSql = files.includes(metaReviewMigrationFile)
   ? migrationContents[files.indexOf(metaReviewMigrationFile)].toLowerCase()
   : "";
+const oauthCompletionMigrationFile =
+  "202609070007_authenticated_oauth_completion.sql";
+const oauthCompletionMigrationSql = files.includes(oauthCompletionMigrationFile)
+  ? migrationContents[files.indexOf(oauthCompletionMigrationFile)].toLowerCase()
+  : "";
+const mediaLeastPrivilegeMigrationFile =
+  "202609070008_media_least_privilege.sql";
+const mediaLeastPrivilegeMigrationSql = files.includes(
+  mediaLeastPrivilegeMigrationFile,
+)
+  ? migrationContents[
+      files.indexOf(mediaLeastPrivilegeMigrationFile)
+    ].toLowerCase()
+  : "";
 const requiredTables = [
   "installation_settings",
   "connected_accounts",
@@ -116,6 +130,43 @@ const requirements = {
     ) &&
     metaReviewMigrationSql.includes("from public, anon, authenticated") &&
     metaReviewMigrationSql.includes("to service_role"),
+  "authenticated OAuth completion":
+    oauthCompletionMigrationSql.includes(
+      "function public.record_bound_oauth_callback",
+    ) &&
+    oauthCompletionMigrationSql.includes(
+      "function public.consume_oauth_completion",
+    ) &&
+    oauthCompletionMigrationSql.includes(
+      "function public.cancel_pending_oauth",
+    ) &&
+    oauthCompletionMigrationSql.includes(
+      "function public.expire_pending_oauth_states",
+    ) &&
+    oauthCompletionMigrationSql.includes("pending_authorization_code") &&
+    oauthCompletionMigrationSql.includes("pending_completion_handle_hash") &&
+    oauthCompletionMigrationSql.includes(
+      "from public, anon, authenticated, service_role",
+    ),
+  "media least privilege":
+    mediaLeastPrivilegeMigrationSql.includes(
+      "drop policy if exists media_assets_owner_all",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "create policy media_assets_owner_select",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "revoke insert, update, delete, truncate, references, trigger",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "from public, anon, authenticated",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "grant select on table public.media_assets to authenticated",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "not has_table_privilege('authenticated', 'public.media_assets', 'update')",
+    ),
 };
 if (missingTables.length || Object.values(requirements).includes(false)) {
   console.error({ missingTables, requirements });

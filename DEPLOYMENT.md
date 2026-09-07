@@ -44,6 +44,17 @@ the migration is missing or inaccessible. See
 [docs/META_SETUP.md](docs/META_SETUP.md) before enabling the default-false
 gate.
 
+Migrations `202609070007_authenticated_oauth_completion.sql` and
+`202609070008_media_least_privilege.sql` are an ordered security boundary and
+must be applied before the Worker and web changes that consume them. The first
+escrows provider callback codes for an exact authenticated-session completion;
+the second removes authenticated direct media mutations while preserving
+owner-only reads and the narrow quota/completion RPCs. The updated stable
+`verify_meta_review_schema()` preflight proves both boundaries and makes a new
+Worker/old-schema deployment stop without mutation. Applying the migrations
+before the Worker also fails safely: the legacy callback-consumption RPC is
+revoked before any old Worker can exchange a newly returned provider code.
+
 ## UploadThing
 
 Complete [docs/UPLOADTHING_SETUP.md](docs/UPLOADTHING_SETUP.md). Enter the v7 token directly into Wrangler's hidden prompt:

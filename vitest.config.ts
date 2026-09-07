@@ -6,6 +6,7 @@ export default defineConfig({
       "packages/*/test/**/*.test.ts",
       "apps/worker/test/**/*.test.ts",
       "apps/web/test/**/*.test.{ts,tsx}",
+      "apps/web/src/**/*.test.{ts,tsx}",
     ],
     coverage: {
       reporter: ["text", "html"],
