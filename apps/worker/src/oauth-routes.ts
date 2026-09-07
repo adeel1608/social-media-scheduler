@@ -7,9 +7,9 @@ import {
   safeStateEquals,
   type Platform,
 } from "@scheduler/shared";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { getCookie, setCookie } from "hono/cookie";
+import { setCookie } from "hono/cookie";
 import { html } from "hono/html";
 
 import { adapterFor, redirectUriFor } from "./adapters";
@@ -26,9 +26,12 @@ import {
 import {
   oauthHash,
   oauthCookieName,
+  oauthCompletionCookieName,
   hashOAuthBrowserBinding,
+  readSingleCookie,
   verifiedOAuthSession,
   type OAuthBindingRecord,
+  type OAuthCompletionRecord,
 } from "./oauth-binding";
 
 const oauth = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -41,6 +44,36 @@ oauth.use("*", async (c, next) => {
 
 function isPlatform(value: string): value is Platform {
   return value === "instagram" || value === "tiktok" || value === "youtube";
+}
+
+type OAuthContext = Context<{ Bindings: Env; Variables: Variables }>;
+
+const browserSecretPattern = /^[A-Za-z0-9_-]{32,128}$/;
+
+function clearOAuthCookies(c: OAuthContext, platform: Platform): void {
+  for (const name of [
+    oauthCookieName(platform),
+    oauthCompletionCookieName(platform),
+  ]) {
+    setCookie(c, name, "", {
+      path: "/",
+      secure: true,
+      httpOnly: true,
+      sameSite: "None",
+      maxAge: 0,
+    });
+  }
+}
+
+function oauthAuthorizationArgs(env: Env, platform: Platform) {
+  const reviewer = metaReviewerConfiguration(env);
+  return {
+    p_owner_email: env.OWNER_EMAIL.trim().toLowerCase(),
+    p_review_enabled: env.META_REVIEW_MODE === "true" && reviewer.configured,
+    p_reviewer_id: reviewer.configured ? reviewer.userId : null,
+    p_reviewer_email: reviewer.configured ? reviewer.email : null,
+    p_redirect_uri: redirectUriFor(platform, env),
+  };
 }
 
 export function oauthStateAuthorizationValid(
@@ -181,97 +214,251 @@ oauth.post("/:platform/start", bodyLimit({ maxSize: 20_000 }), async (c) => {
   return c.json({ authorizationUrl });
 });
 
+oauth.post("/cancel", async (c) => {
+  const authentication = await authenticateWorkspaceRequest(c.env, c.req.raw);
+  if (!authentication.authenticated)
+    return c.json({ error: authentication.error }, authentication.status);
+  const session = verifiedOAuthSession(authentication.jwt);
+  if (!session) return c.json({ error: "invalid_oauth_session" }, 401);
+  await new SupabaseRest(c.env).rpc("cancel_pending_oauth", {
+    p_owner_id: authentication.user.id,
+    p_auth_session_id: session.id,
+  });
+  for (const platform of ["instagram", "tiktok", "youtube"] as const)
+    clearOAuthCookies(c, platform);
+  return c.json({ ok: true });
+});
+
 oauth.get("/:platform/callback", async (c) => {
   const platform = c.req.param("platform") ?? "";
   if (!isPlatform(platform))
     return c.json({ error: "unsupported_platform" }, 404);
-  const code = c.req.query("code");
-  const state = c.req.query("state");
-  const browserBinding = getCookie(c, oauthCookieName(platform));
-  setCookie(c, oauthCookieName(platform), "", {
-    path: "/",
-    secure: true,
-    httpOnly: true,
-    sameSite: "Lax",
-    maxAge: 0,
-  });
-  if (!code || !state || code.length > 4096 || state.length > 128)
+
+  const query = new URL(c.req.url).searchParams;
+  const codes = query.getAll("code");
+  const states = query.getAll("state");
+  if (
+    codes.length !== 1 ||
+    states.length !== 1 ||
+    !codes[0] ||
+    !states[0] ||
+    codes[0].length > 4096 ||
+    states[0].length > 128
+  )
     return c.json({ error: "missing_oauth_parameters" }, 400);
-  if (!browserBinding || !/^[A-Za-z0-9_-]{32,128}$/.test(browserBinding))
+  const code = codes[0];
+  const state = states[0];
+  const browserBinding = readSingleCookie(c.req.raw, oauthCookieName(platform));
+  if (!browserBinding || !browserSecretPattern.test(browserBinding))
     return c.json({ error: "invalid_oauth_browser_binding" }, 403);
+
   const db = new SupabaseRest(c.env);
-  const records = await db.select<Array<Record<string, any>>>(
+  const records = await db.select<
+    Array<OAuthBindingRecord & Record<string, unknown>>
+  >(
     `oauth_states?state_hash=eq.${await oauthHash(state)}&platform=eq.${platform}&consumed_at=is.null&select=*&limit=1`,
   );
   const record = records[0];
-  if (!record || new Date(record.expires_at) <= new Date())
+  if (!record || new Date(record.expires_at).getTime() <= Date.now())
     return c.json({ error: "invalid_or_expired_oauth_state" }, 400);
   if (
     record.redirect_uri !== redirectUriFor(platform, c.env) ||
     !oauthStateAuthorizationValid(c.env, platform, record)
-  )
+  ) {
+    clearOAuthCookies(c, platform);
     return c.json({ error: "reviewer_oauth_not_authorized" }, 403);
-  const bindingHash = await hashOAuthBrowserBinding(
-    browserBinding,
-    record as OAuthBindingRecord,
-  );
+  }
+  const bindingHash = await hashOAuthBrowserBinding(browserBinding, record);
   if (
     typeof record.browser_binding_hash !== "string" ||
     !safeStateEquals(bindingHash, record.browser_binding_hash)
-  )
+  ) {
+    clearOAuthCookies(c, platform);
     return c.json({ error: "invalid_oauth_browser_binding" }, 403);
-  const reviewerConfig = metaReviewerConfiguration(c.env);
-  const authorizationArgs = () => ({
-    p_owner_email: c.env.OWNER_EMAIL.trim().toLowerCase(),
-    p_review_enabled:
-      c.env.META_REVIEW_MODE === "true" && reviewerConfig.configured,
-    p_reviewer_id: reviewerConfig.configured ? reviewerConfig.userId : null,
-    p_reviewer_email: reviewerConfig.configured ? reviewerConfig.email : null,
-    p_redirect_uri: redirectUriFor(platform, c.env),
-  });
+  }
   if (record.authorization_context === "meta_review")
     await requireReviewerAuthorization(
       c.env,
       record.owner_id,
-      record.authorization_generation,
+      record.authorization_generation ?? undefined,
     );
-  const consumed = await db.rpc<Array<Record<string, any>>>(
-    "consume_bound_oauth_state",
+
+  const encryptedCode = await encryptSecret(
+    code,
+    c.env.TOKEN_ENCRYPTION_KEY,
+    c.env.TOKEN_ENCRYPTION_KEY_VERSION,
+  );
+  const completionHandle = createOAuthState();
+  const recorded = await db.rpc<Array<OAuthBindingRecord>>(
+    "record_bound_oauth_callback",
     {
       p_state_hash: record.state_hash,
       p_browser_binding_hash: bindingHash,
       p_platform: platform,
-      ...authorizationArgs(),
+      p_authorization_code: encryptedCode.ciphertext,
+      p_authorization_code_nonce: encryptedCode.nonce,
+      p_authorization_code_key_version: encryptedCode.keyVersion,
+      p_completion_handle_hash: await oauthHash(completionHandle),
+      ...oauthAuthorizationArgs(c.env, platform),
     },
   );
-  if (consumed.length !== 1)
+  if (recorded.length !== 1) {
+    clearOAuthCookies(c, platform);
     return c.json({ error: "oauth_state_already_consumed" }, 400);
-  if (!oauthStateAuthorizationValid(c.env, platform, record)) {
-    return c.json(
-      {
-        error:
-          record.authorization_context === "meta_review"
-            ? "reviewer_oauth_not_authorized"
-            : "invalid_oauth_authorization_context",
-      },
-      record.authorization_context === "meta_review" ? 403 : 400,
-    );
   }
-  const verifier = await decryptSecret(
-    {
-      ciphertext: record.encrypted_pkce_verifier,
-      nonce: record.pkce_nonce,
-      algorithm: "AES-GCM",
-      keyVersion: record.encryption_key_version,
-    },
-    encryptionKeyResolver(c.env),
+
+  const maxAge = Math.max(
+    1,
+    Math.min(
+      600,
+      Math.floor((new Date(record.expires_at).getTime() - Date.now()) / 1000),
+    ),
   );
+  // The callback is a top-level Lax navigation. Completion is an authenticated
+  // cross-site form POST from Pages to workers.dev, so both narrowly scoped
+  // HttpOnly cookies must use Secure + SameSite=None for that one transition.
+  setCookie(c, oauthCookieName(platform), browserBinding, {
+    path: "/",
+    secure: true,
+    httpOnly: true,
+    sameSite: "None",
+    maxAge,
+  });
+  setCookie(c, oauthCompletionCookieName(platform), completionHandle, {
+    path: "/",
+    secure: true,
+    httpOnly: true,
+    sameSite: "None",
+    maxAge,
+  });
+  return c.redirect(
+    `${c.env.APP_URL}/accounts?oauth=pending&platform=${platform}`,
+    303,
+  );
+});
+
+oauth.post("/:platform/complete", bodyLimit({ maxSize: 20_000 }), async (c) => {
+  const platform = c.req.param("platform") ?? "";
+  if (!isPlatform(platform))
+    return c.json({ error: "unsupported_platform" }, 404);
+  const form =
+    c.req
+      .header("Content-Type")
+      ?.startsWith("application/x-www-form-urlencoded") === true;
+  let request = c.req.raw;
+  if (form) {
+    if (c.req.header("Origin") !== c.env.APP_URL)
+      return c.json({ error: "invalid_oauth_origin" }, 403);
+    const body = await c.req.parseBody();
+    if (
+      typeof body.session_token !== "string" ||
+      body.session_token.length > 16_384
+    )
+      return c.json({ error: "authentication_required" }, 401);
+    request = new Request(c.req.url, {
+      headers: { Authorization: `Bearer ${body.session_token}` },
+    });
+  }
+
+  const authentication = await authenticateWorkspaceRequest(c.env, request);
+  if (!authentication.authenticated)
+    return c.json({ error: authentication.error }, authentication.status);
+  const currentSession = verifiedOAuthSession(authentication.jwt);
+  const currentEmail = authentication.user.email?.trim().toLowerCase();
+  if (!currentSession || !currentEmail)
+    return c.json({ error: "invalid_oauth_session" }, 401);
+
+  const browserBinding = readSingleCookie(c.req.raw, oauthCookieName(platform));
+  const completionHandle = readSingleCookie(
+    c.req.raw,
+    oauthCompletionCookieName(platform),
+  );
+  if (
+    !browserBinding ||
+    !completionHandle ||
+    !browserSecretPattern.test(browserBinding) ||
+    !browserSecretPattern.test(completionHandle)
+  )
+    return c.json({ error: "invalid_oauth_completion_cookie" }, 403);
+
+  const completionHandleHash = await oauthHash(completionHandle);
+  const db = new SupabaseRest(c.env);
+  const candidates = await db.select<
+    Array<OAuthBindingRecord & Record<string, unknown>>
+  >(
+    `oauth_states?pending_completion_handle_hash=eq.${completionHandleHash}&platform=eq.${platform}&completion_consumed_at=is.null&select=*&limit=1`,
+  );
+  const candidate = candidates[0];
+  if (!candidate)
+    return c.json({ error: "invalid_or_consumed_oauth_completion" }, 400);
+  const bindingHash = await hashOAuthBrowserBinding(browserBinding, candidate);
+  if (
+    typeof candidate.browser_binding_hash !== "string" ||
+    !safeStateEquals(bindingHash, candidate.browser_binding_hash)
+  ) {
+    clearOAuthCookies(c, platform);
+    return c.json({ error: "invalid_oauth_browser_binding" }, 403);
+  }
+
+  const consumed = await db.rpc<OAuthCompletionRecord[]>(
+    "consume_oauth_completion",
+    {
+      p_completion_handle_hash: completionHandleHash,
+      p_browser_binding_hash: bindingHash,
+      p_platform: platform,
+      p_current_owner_id: authentication.user.id,
+      p_current_email: currentEmail,
+      p_current_auth_session_id: currentSession.id,
+      ...oauthAuthorizationArgs(c.env, platform),
+    },
+  );
+  if (consumed.length !== 1) {
+    clearOAuthCookies(c, platform);
+    return c.json({ error: "oauth_completion_not_authorized" }, 403);
+  }
+  const record = consumed[0]!;
+  clearOAuthCookies(c, platform);
+  if (
+    record.owner_id !== authentication.user.id ||
+    record.initiating_email !== currentEmail ||
+    record.auth_session_id !== currentSession.id ||
+    record.redirect_uri !== redirectUriFor(platform, c.env) ||
+    !oauthStateAuthorizationValid(c.env, platform, record)
+  )
+    return c.json({ error: "oauth_completion_not_authorized" }, 403);
+  if (record.authorization_context === "meta_review")
+    await requireReviewerAuthorization(
+      c.env,
+      record.owner_id,
+      record.authorization_generation ?? undefined,
+    );
+
+  const [code, verifier] = await Promise.all([
+    decryptSecret(
+      {
+        ciphertext: record.pending_authorization_code,
+        nonce: record.pending_authorization_code_nonce,
+        algorithm: "AES-GCM",
+        keyVersion: record.pending_authorization_code_key_version,
+      },
+      encryptionKeyResolver(c.env),
+    ),
+    decryptSecret(
+      {
+        ciphertext: record.encrypted_pkce_verifier,
+        nonce: record.pkce_nonce,
+        algorithm: "AES-GCM",
+        keyVersion: record.encryption_key_version,
+      },
+      encryptionKeyResolver(c.env),
+    ),
+  ]);
   const adapter = adapterFor(platform, c.env);
   if (record.authorization_context === "meta_review")
     await requireReviewerAuthorization(
       c.env,
       record.owner_id,
-      record.authorization_generation,
+      record.authorization_generation ?? undefined,
     );
   const tokens = await adapter.exchangeAuthorizationCode(
     code,
@@ -282,7 +469,7 @@ oauth.get("/:platform/callback", async (c) => {
     await requireReviewerAuthorization(
       c.env,
       record.owner_id,
-      record.authorization_generation,
+      record.authorization_generation ?? undefined,
     );
   const profile = await adapter.getAccountProfile(tokens.accessToken);
   const access = await encryptSecret(
@@ -301,12 +488,12 @@ oauth.get("/:platform/callback", async (c) => {
     await requireReviewerAuthorization(
       c.env,
       record.owner_id,
-      record.authorization_generation,
+      record.authorization_generation ?? undefined,
     );
   await db.rpc("persist_bound_oauth_account", {
     p_state_id: record.id,
     p_browser_binding_hash: bindingHash,
-    ...authorizationArgs(),
+    ...oauthAuthorizationArgs(c.env, platform),
     p_account: {
       remote_account_id: profile.id,
       username: profile.username,
@@ -330,7 +517,7 @@ oauth.get("/:platform/callback", async (c) => {
       },
     },
   });
-  return c.redirect(`${c.env.APP_URL}/accounts?connected=${platform}`);
+  return c.redirect(`${c.env.APP_URL}/accounts?connected=${platform}`, 303);
 });
 
 export default oauth;

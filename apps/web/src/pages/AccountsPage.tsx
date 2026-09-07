@@ -15,7 +15,11 @@ import { useCallback, useEffect, useState } from "react";
 
 import { PlatformBadge } from "../components/PlatformBadge";
 import { useAuth } from "../context/AuthContext";
-import { apiRequest, startOAuthNavigation } from "../lib/api";
+import {
+  apiRequest,
+  completeOAuthNavigation,
+  startOAuthNavigation,
+} from "../lib/api";
 
 export interface ConnectedAccountSummary {
   id: string;
@@ -78,21 +82,38 @@ function approvalStatus(account: ConnectedAccountSummary): string {
   }[account.approval_state];
 }
 
-function removeCallbackNotification(): Platform | null {
+function removeCallbackNotification(): {
+  connected: Platform | null;
+  pending: Platform | null;
+} {
   const url = new URL(window.location.href);
-  const value = url.searchParams.get("connected");
-  const platform = providerDetails.some((item) => item.platform === value)
-    ? (value as Platform)
+  const connectedValue = url.searchParams.get("connected");
+  const pendingValue =
+    url.searchParams.get("oauth") === "pending"
+      ? url.searchParams.get("platform")
+      : null;
+  const connected = providerDetails.some(
+    (item) => item.platform === connectedValue,
+  )
+    ? (connectedValue as Platform)
     : null;
-  if (url.searchParams.has("connected")) {
-    url.searchParams.delete("connected");
+  const pending = providerDetails.some((item) => item.platform === pendingValue)
+    ? (pendingValue as Platform)
+    : null;
+  if (
+    url.searchParams.has("connected") ||
+    url.searchParams.has("oauth") ||
+    url.searchParams.has("platform")
+  ) {
+    for (const name of ["connected", "oauth", "platform"])
+      url.searchParams.delete(name);
     window.history.replaceState(
       {},
       "",
       `${url.pathname}${url.search}${url.hash}`,
     );
   }
-  return platform;
+  return { connected, pending };
 }
 
 export function AccountsPage() {
@@ -158,9 +179,23 @@ export function AccountsPage() {
 
   useEffect(() => {
     if (demoMode || authenticationLoading) return;
-    const callbackPlatform = removeCallbackNotification();
-    void refreshAccounts(callbackPlatform);
-  }, [authenticationLoading, demoMode, refreshAccounts]);
+    const callback = removeCallbackNotification();
+    if (callback.pending && session) {
+      setWorking(`complete:${callback.pending}`);
+      try {
+        completeOAuthNavigation(callback.pending, session);
+      } catch (reason) {
+        setWorking(null);
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "The account connection could not be completed.",
+        );
+      }
+      return;
+    }
+    void refreshAccounts(callback.connected);
+  }, [authenticationLoading, demoMode, refreshAccounts, session]);
 
   async function connect(platform: Platform) {
     setWorking(`connect:${platform}`);

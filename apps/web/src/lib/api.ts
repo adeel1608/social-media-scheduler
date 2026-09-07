@@ -27,6 +27,50 @@ export function startOAuthNavigation(
   }
 }
 
+/** Complete OAuth as a top-level POST so the Worker's Secure HttpOnly
+ * SameSite=None completion cookies are available without putting the bearer
+ * token or completion handle in a URL or frontend storage.
+ */
+export function completeOAuthNavigation(
+  platform: "instagram" | "tiktok" | "youtube",
+  session: Session,
+): void {
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = new URL(`/api/oauth/${platform}/complete`, apiUrl).href;
+  form.hidden = true;
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "session_token";
+  input.value = session.access_token;
+  form.append(input);
+  document.body.append(form);
+  try {
+    form.submit();
+  } finally {
+    form.remove();
+  }
+}
+
+export async function cancelPendingOAuth(
+  session: Session,
+  fetcher: typeof fetch = fetch,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await fetcher(`${apiUrl}/api/oauth/cancel`, {
+      method: "POST",
+      credentials: "include",
+      headers: { Authorization: `Bearer ${session.access_token}` },
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 export interface UploadThingClient {
   uploadFiles(
     endpoint: "media",

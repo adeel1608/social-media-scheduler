@@ -796,6 +796,10 @@ app.delete("/api/media/:id", async (c) => {
     c.get("accessRole") === "meta_reviewer"
       ? serviceDatabase(c)
       : ownerDatabase(c.env, c.get("jwt"));
+  // Authenticated clients have SELECT-only table access. The Worker performs
+  // these fixed cleanup transitions with its service role after rechecking the
+  // authenticated workspace and confirming the provider outcome.
+  const mutationDb = serviceDatabase(c);
   const rows = await db.select<
     Array<{
       id: string;
@@ -832,7 +836,7 @@ app.delete("/api/media/:id", async (c) => {
       },
       409,
     );
-  await db.update(
+  await mutationDb.update(
     `media_assets?id=eq.${media.id}&owner_id=eq.${c.get("user").id}`,
     {
       deletion_status: "pending",
@@ -844,7 +848,7 @@ app.delete("/api/media/:id", async (c) => {
     const deletion = reservationDeletionTarget(media);
     await deleteUploadThingFile(c.env, deletion.identifier, deletion.keyType);
   } catch {
-    await db.update(
+    await mutationDb.update(
       `media_assets?id=eq.${media.id}&owner_id=eq.${c.get("user").id}`,
       {
         deletion_status: "failed",
@@ -860,7 +864,7 @@ app.delete("/api/media/:id", async (c) => {
       502,
     );
   }
-  await db.update(
+  await mutationDb.update(
     `media_assets?id=eq.${media.id}&owner_id=eq.${c.get("user").id}`,
     {
       upload_status: "deleted",
@@ -1004,6 +1008,11 @@ const worker = {
     if (scheduledMinute === 23) {
       context.waitUntil(cleanupMedia(env));
       context.waitUntil(cleanupExpiredReservations(env));
+      context.waitUntil(
+        new SupabaseRest(env).rpc("expire_pending_oauth_states", {
+          p_limit: 250,
+        }),
+      );
     }
   },
   async queue(batch: MessageBatch<QueueJob>, env: Env) {

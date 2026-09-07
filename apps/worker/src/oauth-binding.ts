@@ -9,8 +9,43 @@ export interface OAuthBindingRecord {
   expires_at: string;
 }
 
+export interface OAuthCompletionRecord extends OAuthBindingRecord {
+  id: string;
+  browser_binding_hash: string;
+  encrypted_pkce_verifier: string;
+  pkce_nonce: string;
+  encryption_key_version: string;
+  callback_received_at: string;
+  completion_consumed_at: string;
+  pending_authorization_code: string;
+  pending_authorization_code_nonce: string;
+  pending_authorization_code_key_version: string;
+}
+
 export const oauthCookieName = (platform: string) =>
   `__Host-postline-oauth-${platform}`;
+
+export const oauthCompletionCookieName = (platform: string) =>
+  `__Host-postline-oauth-completion-${platform}`;
+
+/** Reject duplicate or oversized Cookie values instead of accepting whichever
+ * value a framework parser happens to choose after cookie tossing/fixation.
+ */
+export function readSingleCookie(
+  request: Request,
+  name: string,
+): string | null {
+  const header = request.headers.get("Cookie");
+  if (!header || header.length > 4096) return null;
+  const values: string[] = [];
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 1) continue;
+    if (part.slice(0, separator).trim() !== name) continue;
+    values.push(part.slice(separator + 1).trim());
+  }
+  return values.length === 1 ? values[0]! : null;
+}
 
 export async function oauthHash(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(

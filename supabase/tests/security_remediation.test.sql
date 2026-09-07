@@ -1,6 +1,6 @@
 begin;
 
-select plan(47);
+select plan(57);
 
 select ok(to_regclass('public.meta_review_authorization') is not null, 'durable reviewer authorization exists');
 select ok((select relrowsecurity from pg_class where oid = 'public.meta_review_authorization'::regclass), 'review authorization enforces RLS');
@@ -69,12 +69,24 @@ values('70000000-0000-4000-8000-000000000052','70000000-0000-4000-8000-000000000
  '70000000-0000-4000-8000-000000000051','review-security@example.test',null);
 
 set local role service_role;
-select is((select count(*) from public.consume_bound_oauth_state('bound-state',repeat('c',64),'instagram',
+select ok(not has_function_privilege('service_role','public.consume_bound_oauth_state(text,text,public.social_platform,text,boolean,uuid,text,text)','execute'),
+ 'legacy callback-time OAuth consumption is disabled');
+select is((select count(*) from public.record_bound_oauth_callback('bound-state',repeat('c',64),'instagram',
+ repeat('e',32),repeat('f',16),'v1',repeat('a',64),'owner-security@example.test',true,
+ '70000000-0000-4000-8000-000000000002','review-security@example.test','https://callback.test')),
+ 0::bigint, 'wrong browser binding cannot record provider callback');
+select is((select count(*) from public.record_bound_oauth_callback('bound-state',repeat('b',64),'instagram',
+ repeat('e',32),repeat('f',16),'v1',repeat('a',64),'owner-security@example.test',true,
+ '70000000-0000-4000-8000-000000000002','review-security@example.test','https://callback.test')),
+ 1::bigint, 'callback atomically records encrypted pending completion without account persistence');
+select is((select count(*) from public.consume_oauth_completion(repeat('a',64),repeat('b',64),'instagram',
+ '70000000-0000-4000-8000-000000000002','review-security@example.test','70000000-0000-4000-8000-000000000099',
  'owner-security@example.test',true,'70000000-0000-4000-8000-000000000002','review-security@example.test','https://callback.test')),
- 0::bigint, 'wrong browser binding cannot consume OAuth state');
-select is((select count(*) from public.consume_bound_oauth_state('bound-state',repeat('b',64),'instagram',
+ 0::bigint, 'a different authenticated session cannot consume pending OAuth completion');
+select is((select count(*) from public.consume_oauth_completion(repeat('a',64),repeat('b',64),'instagram',
+ '70000000-0000-4000-8000-000000000002','review-security@example.test','70000000-0000-4000-8000-000000000051',
  'owner-security@example.test',true,'70000000-0000-4000-8000-000000000002','review-security@example.test','https://callback.test')),
- 1::bigint, 'same session and browser binding atomically consumes OAuth state once');
+ 1::bigint, 'same user email session browser and handle atomically consume completion once');
 select throws_ok($$select public.persist_bound_oauth_account(
  '70000000-0000-4000-8000-000000000052',repeat('b',64),
  '{"remote_account_id":"owner-remote","username":"conflict","encrypted_access_token":"cipher","access_token_nonce":"nonce","encryption_key_version":"v1","approval_state":"pending"}'::jsonb,
@@ -120,6 +132,18 @@ set local "request.jwt.claims" = '{"sub":"70000000-0000-4000-8000-000000000003",
 set local role authenticated;
 select is((select count(*) from public.posts), 0::bigint, 'unrelated user has no post RLS access');
 reset role;
+
+select ok(has_table_privilege('authenticated','public.media_assets','select'), 'authenticated owner retains media select privilege');
+select ok(not has_table_privilege('authenticated','public.media_assets','insert'), 'authenticated cannot directly insert media');
+select ok(not has_table_privilege('authenticated','public.media_assets','update'), 'authenticated cannot directly update media');
+select ok(not has_table_privilege('authenticated','public.media_assets','delete'), 'authenticated cannot directly delete media');
+select ok(not has_table_privilege('anon','public.media_assets','insert')
+ and not has_table_privilege('anon','public.media_assets','update')
+ and not has_table_privilege('anon','public.media_assets','delete'), 'anon has no media mutation privilege');
+select ok(not exists(select 1 from pg_policies where schemaname='public' and tablename='media_assets'
+ and cmd in ('INSERT','UPDATE','DELETE','ALL')), 'media has no browser mutation policy');
+select ok(exists(select 1 from pg_policies where schemaname='public' and tablename='media_assets'
+ and policyname='media_assets_owner_select' and cmd='SELECT'), 'media has one explicit owner read policy');
 
 set local role service_role;
 select is((select limit_bytes from public.meta_review_storage_usage('70000000-0000-4000-8000-000000000002')), 483183820::bigint, 'reviewer allocation is smaller and bounded');

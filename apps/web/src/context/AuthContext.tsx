@@ -8,6 +8,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { cancelPendingOAuth } from "../lib/api";
+
 const demoMode =
   import.meta.env.VITE_DEMO_MODE === "true" || import.meta.env.MODE === "e2e";
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? "";
@@ -177,9 +179,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       },
       async signOut() {
-        await supabase?.auth.signOut({ scope: "local" });
-        setSession(null);
-        setAccessRole(null);
+        if (session) {
+          try {
+            await cancelPendingOAuth(session);
+          } catch {
+            // Best effort only. Exact server-side Auth session matching keeps a
+            // stale OAuth completion unusable if cleanup is unavailable.
+          }
+        }
+        try {
+          await supabase?.auth.signOut({ scope: "local" });
+        } finally {
+          setSession(null);
+          setAccessRole(null);
+        }
       },
     }),
     [accessRole, loading, session],

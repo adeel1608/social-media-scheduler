@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   },
   apiRequest: vi.fn(),
   startOAuthNavigation: vi.fn(),
+  completeOAuthNavigation: vi.fn(),
 }));
 
 vi.mock("../src/context/AuthContext", () => ({
@@ -34,6 +35,8 @@ vi.mock("../src/lib/api", () => ({
   apiRequest: (...arguments_: unknown[]) => mocks.apiRequest(...arguments_),
   startOAuthNavigation: (...arguments_: unknown[]) =>
     mocks.startOAuthNavigation(...arguments_),
+  completeOAuthNavigation: (...arguments_: unknown[]) =>
+    mocks.completeOAuthNavigation(...arguments_),
 }));
 
 const session = {
@@ -62,6 +65,8 @@ beforeEach(() => {
   mocks.auth.session = session;
   mocks.auth.accessRole = "owner";
   mocks.apiRequest.mockReset();
+  mocks.startOAuthNavigation.mockReset();
+  mocks.completeOAuthNavigation.mockReset();
   window.history.replaceState({}, "", "/accounts");
 });
 
@@ -201,6 +206,24 @@ describe("authoritative Connected Accounts UI", () => {
       await screen.findByText("TikTok connection confirmed by the server."),
     ).toBeTruthy();
     expect(mocks.apiRequest).toHaveBeenCalledWith("/api/accounts", session);
+    expect(window.location.search).toBe("");
+  });
+
+  it("finishes an escrowed callback with the current session and no URL secret", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/accounts?oauth=pending&platform=instagram",
+    );
+    render(<AccountsPage />);
+
+    await waitFor(() =>
+      expect(mocks.completeOAuthNavigation).toHaveBeenCalledWith(
+        "instagram",
+        session,
+      ),
+    );
+    expect(mocks.apiRequest).not.toHaveBeenCalled();
     expect(window.location.search).toBe("");
   });
 

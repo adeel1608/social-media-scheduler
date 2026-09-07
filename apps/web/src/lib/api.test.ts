@@ -1,6 +1,14 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it, vi } from "vitest";
 
-import { uploadDirect, type UploadThingClient } from "./api";
+import {
+  cancelPendingOAuth,
+  completeOAuthNavigation,
+  startOAuthNavigation,
+  uploadDirect,
+  type UploadThingClient,
+} from "./api";
 
 const session = {
   access_token: "owner-jwt",
@@ -65,5 +73,47 @@ describe("browser UploadThing integration", () => {
         uploader,
       ),
     ).rejects.toThrow("server did not confirm it for scheduling");
+  });
+});
+
+describe("browser OAuth navigation", () => {
+  it.each([
+    ["start", startOAuthNavigation],
+    ["complete", completeOAuthNavigation],
+  ])(
+    "submits %s with a transient body token and no URL secret",
+    (_name, navigate) => {
+      const submit = vi
+        .spyOn(HTMLFormElement.prototype, "submit")
+        .mockImplementation(() => undefined);
+      navigate("instagram", session);
+
+      expect(submit).toHaveBeenCalledTimes(1);
+      const form = submit.mock.instances[0] as HTMLFormElement;
+      expect(form.method).toBe("post");
+      expect(form.action).toMatch(/\/api\/oauth\/instagram\/(start|complete)$/);
+      expect(form.action).not.toContain(session.access_token);
+      expect(
+        form.querySelector<HTMLInputElement>("[name=session_token]")?.value,
+      ).toBe(session.access_token);
+      expect(document.body.contains(form)).toBe(false);
+      submit.mockRestore();
+    },
+  );
+
+  it("attempts bounded credentialed server cancellation during sign-out", async () => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    await cancelPendingOAuth(session, fetcher, 100);
+    expect(fetcher).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/oauth\/cancel$/),
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      }),
+    );
+    expect(String(fetcher.mock.calls[0]?.[0])).not.toContain(
+      session.access_token,
+    );
   });
 });
