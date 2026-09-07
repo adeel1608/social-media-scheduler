@@ -53,8 +53,11 @@ operations are limited to the reviewer's own Instagram OAuth
 state, account, UploadThing media, post targets and analytics. Existing owner
 RLS remains unchanged and gives the reviewer no direct table access. The
 Worker uses service-only RPCs with explicit reviewer ownership checks. A
-durable `authorization_context = 'meta_review'` marker follows the OAuth state,
-connected account and publishing target into queue processing. TikTok,
+durable, expiring authorization generation follows the OAuth state, connected
+account, post, media, publishing target and queue message. Current Supabase Auth
+status is rechecked at each privileged boundary; a ban, deletion, email change,
+password disablement, grant rotation or unavailable Auth service fails closed.
+TikTok,
 YouTube, setup, settings, export, installation deletion, manual retry and
 manual ambiguity resolution are denied.
 
@@ -66,6 +69,7 @@ time:
 - the target owner is the exact configured `META_REVIEWER_USER_ID`;
 - the connected account and every post/media record belong to that user;
 - the account, OAuth state and target carry the `meta_review` context; and
+- their authorization generation equals the current expiring server-side grant; and
 - the platform is Instagram.
 
 `META_APP_REVIEW_APPROVED`, `LIVE_TEST_CONFIRM`,
@@ -77,8 +81,12 @@ blocks before token decryption or any provider request.
 
 Do this manually immediately before the review window:
 
-1. Apply and verify the additive migration
-   `202609060001_meta_review_access.sql` in a reviewed release. Do not deploy
+1. Apply and verify the additive migrations from
+   `202609060001_meta_review_access.sql` through
+   `202609070006_generation_enforcement.sql` in a reviewed release. These add
+   browser/session-bound OAuth, current reviewer authorization, publication
+   fencing, service-only disconnect recovery and shared upload quota controls.
+   Do not deploy
    code that depends on it until `verify_meta_review_schema` returns
    `{"ready":true}` through the service-role production preflight.
 2. In Supabase Dashboard > Authentication > Providers > Email, confirm that
@@ -95,8 +103,21 @@ Do this manually immediately before the review window:
 6. Confirm Supabase CAPTCHA protection already uses Cloudflare Turnstile. Both
    owner OTP and reviewer password authentication send a Turnstile token to
    Supabase.
+7. In a reviewed Supabase SQL Editor session, call the service-only
+   `set_meta_review_authorization` function with the exact UUID, normalized
+   email, `true`, and a short expiry covering only the review window. Never
+   record the password or returned generation. This operator action is never
+   performed by a Worker request or deployment.
 
 ### Configure and enable safely
+
+OAuth start creates a high-entropy, one-use `Secure`, `HttpOnly`, `SameSite=Lax`
+browser cookie whose hash is bound to the verified Supabase session, identity,
+context, generation, redirect URI and expiry. A missing/different-browser cookie
+or stale session fails before Meta token exchange. Instagram does not claim
+PKCE; its encrypted verifier field is retained as a cross-provider storage
+detail. A database uniqueness constraint prevents the same Instagram remote
+account from being silently linked into conflicting workspaces.
 
 The checked-in Worker and Pages defaults must stay `false`. Prepare a reviewed
 temporary release that changes only the Worker `META_REVIEW_MODE` variable to
@@ -262,8 +283,8 @@ replaying an applied migration.
 
 ## Publishing and analytics implementation
 
-Postline creates child containers, writes durable markers before carousel
-parent and final publish requests, polls asynchronous processing and calls
+Postline creates child containers, writes lease- and version-fenced durable
+markers immediately before each provider write, polls asynchronous processing and calls
 `/{ig-user-id}/media_publish`. Its signed Worker endpoint supplies short-lived
 HTTPS media backed by a validated UploadThing file. Feed-image alt text is sent
 only where the official guide supports it; it is not claimed for Reels or
@@ -273,6 +294,11 @@ The adapter requests media insights through official `/insights` endpoints
 with `instagram_business_manage_insights` and stores raw names plus normalized
 values. Meta varies/deprecates metrics by media type and version, so the UI
 keeps unsupported values unavailable.
+
+Owner and reviewer uploads share the repository's existing 1,932,735,283-byte
+application safety ceiling. Reviewer reservations additionally have a
+483,183,820-byte allocation. Both paths take the same database transaction
+lock; quota failures do not disclose owner media or usage.
 
 Official sources:
 [overview](https://developers.facebook.com/docs/instagram-platform/overview),

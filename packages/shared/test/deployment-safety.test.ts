@@ -88,9 +88,19 @@ describe("production deployment safety", () => {
     expect(wrangler).toMatch(/^redact_query_string = true$/m);
   });
 
+  it("disables automatic request logs and traces while retaining sanitized events", () => {
+    const logs = wrangler.split("[observability.logs]")[1]?.split("[")[0];
+    const traces = wrangler.split("[observability.traces]")[1]?.split("[")[0];
+    expect(logs).toMatch(/^enabled = true$/m);
+    expect(logs).toMatch(/^invocation_logs = false$/m);
+    expect(traces).toMatch(/^enabled = false$/m);
+  });
+
   it("executes migrations in disposable Supabase and gates Worker deployment", () => {
     expect(ciWorkflow).toContain("corepack pnpm exec supabase start");
     expect(ciWorkflow).toContain("corepack pnpm db:test");
+    expect(ciWorkflow).toContain("corepack pnpm db:integration");
+    expect(ciWorkflow).toContain("all fifteen migrations");
     expect(ciWorkflow).toContain(
       "corepack pnpm exec supabase stop --no-backup",
     );

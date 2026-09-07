@@ -9,6 +9,8 @@ export type WorkerErrorCode =
   | "queue_retry_exhausted"
   | "queue_lease_release_failed"
   | "stale_queue_dispatch_failed"
+  | "reviewer_due_claim_skipped"
+  | "reviewer_stale_recovery_skipped"
   | "provider_revocation_incomplete"
   | "notification_reconciliation_failed"
   | "media_retention_update_failed";

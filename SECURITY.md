@@ -48,6 +48,14 @@ resolver change.
 
 ## API controls
 
+Automatic Cloudflare invocation/request logs and traces are disabled in
+Wrangler. Explicit application error events remain enabled; their formatter
+accepts only stable event codes, bounded identifiers, counters, and allowlisted
+configuration key names. Request URLs, query strings, cookies, OAuth codes/state,
+credentials, and signed delivery URLs are not event fields. Query-string
+redaction remains enabled as defense in depth. This describes checked-in
+configuration, not a verification of hosted log settings or historical logs.
+
 - Zod validates incoming posts, pagination and platform metadata.
 - Every `/api/*` endpoint except provider OAuth callbacks and the UploadThing file-route endpoint requires verified workspace middleware. Owner routes retain their existing email gate; reviewer routes also require current mode plus exact email/UUID and a default-deny allowlist. UploadThing callbacks are public so the provider can reach them, but the official SDK verifies their HMAC signature before completion logic runs.
 - State-changing owner RPCs enforce owner identity/RLS again. Reviewer RPCs are executable only by `service_role`, validate reviewer ownership and are never callable directly by `anon` or `authenticated`.

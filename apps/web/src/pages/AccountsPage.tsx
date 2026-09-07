@@ -15,7 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { PlatformBadge } from "../components/PlatformBadge";
 import { useAuth } from "../context/AuthContext";
-import { apiRequest } from "../lib/api";
+import { apiRequest, startOAuthNavigation } from "../lib/api";
 
 export interface ConnectedAccountSummary {
   id: string;
@@ -172,12 +172,7 @@ export function AccountsPage() {
       return;
     }
     try {
-      const result = await apiRequest<{ authorizationUrl: string }>(
-        `/api/oauth/${platform}/start`,
-        session,
-        { method: "POST" },
-      );
-      window.location.assign(result.authorizationUrl);
+      startOAuthNavigation(platform, session);
     } catch (reason) {
       setMessage(
         reason instanceof Error

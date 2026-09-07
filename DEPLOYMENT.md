@@ -59,6 +59,13 @@ Worker HTTPS origin so UploadThing can reach `/api/uploadthing` callbacks.
 
 ## Cloudflare Worker resources and secrets
 
+Keep `[observability.logs].invocation_logs=false` and
+`[observability.traces].enabled=false`. Sanitized application events remain
+enabled; automatic request/URL events do not. `redact_query_string=true` is
+retained as defense in depth. Do not enable raw request logging to debug OAuth
+or signed media delivery. Validate configuration using the pinned Wrangler
+dry-run; no production-log inspection is required.
+
 Inspect resources before creating anything. R2 is neither needed nor authorized:
 
 ```bash

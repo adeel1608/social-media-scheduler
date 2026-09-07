@@ -47,6 +47,27 @@ describe("sanitized Worker error logging", () => {
     expect(output).not.toContain("not-a-binding-value");
   });
 
+  it.each([
+    "https://worker.example.test/api/oauth/instagram/callback?code=SYNTHETIC&state=SYNTHETIC",
+    "https://worker.example.test/delivery/media?signature=SYNTHETIC&expires=1234567890",
+    "Cookie: oauth-binding=SYNTHETIC",
+    "Bearer SYNTHETIC",
+  ])("drops sensitive request context: %s", (value) => {
+    const output = formatWorkerError("request_failed", {
+      requestId: value,
+      targetId: value,
+      messageId: value,
+      provider: value,
+      state: value,
+      classification: value,
+    });
+    expect(JSON.parse(output)).toEqual({
+      level: "error",
+      message: "request_failed",
+    });
+    expect(output).not.toContain("SYNTHETIC");
+  });
+
   it("writes only the formatted safe entry", () => {
     const error = vi
       .spyOn(console, "error")

@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     accessRole: "owner" as "owner" | "meta_reviewer",
   },
   apiRequest: vi.fn(),
+  startOAuthNavigation: vi.fn(),
 }));
 
 vi.mock("../src/context/AuthContext", () => ({
@@ -31,6 +32,8 @@ vi.mock("../src/context/AuthContext", () => ({
 
 vi.mock("../src/lib/api", () => ({
   apiRequest: (...arguments_: unknown[]) => mocks.apiRequest(...arguments_),
+  startOAuthNavigation: (...arguments_: unknown[]) =>
+    mocks.startOAuthNavigation(...arguments_),
 }));
 
 const session = {

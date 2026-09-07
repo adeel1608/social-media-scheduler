@@ -35,3 +35,11 @@ crons = ["* * * * *"]
 enabled = true
 head_sampling_rate = 1
 redact_query_string = true
+
+# OAuth and signed delivery requests must not generate raw request events.
+[observability.logs]
+enabled = true
+invocation_logs = false
+
+[observability.traces]
+enabled = false

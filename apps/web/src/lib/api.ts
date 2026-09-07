@@ -3,6 +3,30 @@ import { genUploader } from "uploadthing/client";
 
 const apiUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8787";
 
+/** First-party Worker navigation establishes an HttpOnly Lax OAuth cookie.
+ * No session or binding value is placed in a URL or browser storage.
+ */
+export function startOAuthNavigation(
+  platform: "instagram" | "tiktok" | "youtube",
+  session: Session,
+): void {
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = new URL(`/api/oauth/${platform}/start`, apiUrl).href;
+  form.hidden = true;
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "session_token";
+  input.value = session.access_token;
+  form.append(input);
+  document.body.append(form);
+  try {
+    form.submit();
+  } finally {
+    form.remove();
+  }
+}
+
 export interface UploadThingClient {
   uploadFiles(
     endpoint: "media",
