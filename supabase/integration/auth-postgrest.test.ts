@@ -11,9 +11,9 @@ const ownerId = crypto.randomUUID();
 const reviewerId = crypto.randomUUID();
 const unrelatedId = crypto.randomUUID();
 const suffix = crypto.randomUUID();
-const ownerEmail = `owner-${suffix}@example.test`;
-const reviewerEmail = `reviewer-${suffix}@example.test`;
-const unrelatedEmail = `unrelated-${suffix}@example.test`;
+const ownerEmail = `owner-${suffix}@example.com`;
+const reviewerEmail = `reviewer-${suffix}@example.com`;
+const unrelatedEmail = `unrelated-${suffix}@example.com`;
 const password = `Synthetic-${crypto.randomUUID()}-A1!`;
 let ownerJwt = "";
 let reviewerJwt = "";
@@ -54,11 +54,28 @@ async function json(
   apiKey = serviceKey,
 ) {
   const response = await api(path, init, token, apiKey);
-  expect(
-    response.ok,
-    `local request ${path} failed with ${response.status}`,
-  ).toBe(true);
   const text = await response.text();
+  if (!response.ok) {
+    let errorCode = "unknown";
+    try {
+      const error = JSON.parse(text) as {
+        code?: unknown;
+        error_code?: unknown;
+      };
+      const candidate = error.error_code ?? error.code;
+      if (
+        typeof candidate === "string" &&
+        /^[a-z][a-z0-9_]{0,63}$/i.test(candidate)
+      ) {
+        errorCode = candidate;
+      }
+    } catch {
+      // Do not echo response bodies: Auth errors can include submitted identity data.
+    }
+    throw new Error(
+      `local request ${path} failed with ${response.status} (${errorCode})`,
+    );
+  }
   return text ? JSON.parse(text) : null;
 }
 async function createUser(id: string, email: string) {
@@ -106,11 +123,9 @@ beforeAll(async () => {
     p_enabled: true,
     p_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
   })) as string;
-  [ownerJwt, reviewerJwt, unrelatedJwt] = await Promise.all([
-    signIn(ownerEmail),
-    signIn(reviewerEmail),
-    signIn(unrelatedEmail),
-  ]);
+  ownerJwt = await signIn(ownerEmail);
+  reviewerJwt = await signIn(reviewerEmail);
+  unrelatedJwt = await signIn(unrelatedEmail);
 });
 
 afterAll(() => {
@@ -356,7 +371,7 @@ describe.sequential("real disposable Auth and PostgREST", () => {
       p_enabled: true,
       p_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
     })) as string;
-    const renamedEmail = `renamed-${suffix}@example.test`;
+    const renamedEmail = `renamed-${suffix}@example.com`;
     await json(`/auth/v1/admin/users/${reviewerId}`, {
       method: "PUT",
       body: JSON.stringify({ email: renamedEmail, email_confirm: true }),
@@ -369,7 +384,7 @@ describe.sequential("real disposable Auth and PostgREST", () => {
     ).toBeNull();
 
     const replacementId = crypto.randomUUID();
-    const replacementEmail = `replacement-${suffix}@example.test`;
+    const replacementEmail = `replacement-${suffix}@example.com`;
     await createUser(replacementId, replacementEmail);
     await rpc("set_meta_review_authorization", {
       p_user_id: replacementId,
