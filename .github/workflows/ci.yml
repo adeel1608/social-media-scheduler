@@ -32,12 +32,14 @@ jobs:
       - run: corepack pnpm test
       - run: corepack pnpm build:verify
       - run: corepack pnpm db:validate
-      - name: Start disposable Supabase and apply all nine migrations
+      - name: Start disposable Supabase and apply all fifteen migrations
         run: |
-          corepack pnpm exec supabase start
+          corepack pnpm exec supabase start > /tmp/postline-supabase-start.log 2>&1
           corepack pnpm exec supabase migration list --local
       - name: Verify migrations against PostgreSQL
         run: corepack pnpm db:test
+      - name: Verify real Auth and PostgREST boundaries
+        run: corepack pnpm db:integration
       - name: Stop disposable Supabase
         if: always()
         run: corepack pnpm exec supabase stop --no-backup

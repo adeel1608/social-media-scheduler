@@ -23,6 +23,7 @@
     "test:e2e": "corepack pnpm --filter @scheduler/web test:e2e",
     "db:validate": "node scripts/validate-migrations.mjs",
     "db:test": "supabase test db",
+    "db:integration": "node scripts/run-disposable-integration.mjs",
     "db:verify:production": "node scripts/verify-production-migration.mjs",
     "setup-doctor": "node scripts/setup-doctor.mjs",
     "secrets:scan": "node scripts/secret-scan.mjs",

@@ -79,7 +79,6 @@ select ok(
   'authenticated cannot execute the Phase 2B preflight'
 );
 
-set local "request.jwt.claim.role" = 'service_role';
 set local role service_role;
 select is(
   (
@@ -246,7 +245,6 @@ insert into public.publish_attempts (
   'phase2b-notification-test'
 );
 
-set local "request.jwt.claim.role" = 'service_role';
 set local role service_role;
 
 create temp table phase2b_disconnect_state as
@@ -478,29 +476,39 @@ select ok(
   'authenticated users cannot reserve reviewer media directly'
 );
 
-insert into auth.users (id, email)
-values ('ffffffff-ffff-4fff-8fff-ffffffffffff', 'meta-reviewer@example.test');
+insert into auth.users (id, email, email_confirmed_at, encrypted_password)
+values ('ffffffff-ffff-4fff-8fff-ffffffffffff', 'meta-reviewer@example.test', now(), 'test-password-hash');
+
+create temp table meta_review_generation (generation uuid);
+grant select, insert on table meta_review_generation to service_role;
+set local role service_role;
+insert into meta_review_generation select public.set_meta_review_authorization(
+  'ffffffff-ffff-4fff-8fff-ffffffffffff', 'meta-reviewer@example.test', true, now() + interval '1 hour'
+);
+reset role;
 
 insert into public.connected_accounts (
   id, owner_id, platform, remote_account_id, encrypted_access_token,
   access_token_nonce, encryption_key_version, approval_state,
-  authorization_context
+  authorization_context, authorization_generation
 ) values (
   '12121212-1212-4212-8212-121212121212',
   'ffffffff-ffff-4fff-8fff-ffffffffffff',
   'instagram', 'meta-review-account', 'review-ciphertext', 'review-nonce',
-  'v1', 'pending', 'meta_review'
+  'v1', 'pending', 'meta_review', (select generation from meta_review_generation)
 );
 
 insert into public.media_assets (
   id, owner_id, object_key, original_filename, mime_type, size_bytes,
-  upload_status, storage_provider, provider_file_key, provider_url
+  upload_status, storage_provider, provider_file_key, provider_url,
+  authorization_context, authorization_generation
 ) values (
   '13131313-1313-4313-8313-131313131313',
   'ffffffff-ffff-4fff-8fff-ffffffffffff',
   'meta-review-media-key', 'review.jpg', 'image/jpeg', 1024,
   'complete', 'uploadthing', 'meta-review-media-key',
-  'https://meta-review.ufs.sh/f/meta-review-media-key'
+  'https://meta-review.ufs.sh/f/meta-review-media-key', 'meta_review',
+  (select generation from meta_review_generation)
 );
 
 create temp table meta_review_created_post (id uuid);
