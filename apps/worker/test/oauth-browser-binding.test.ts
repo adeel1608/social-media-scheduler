@@ -70,6 +70,11 @@ function callbackRequest(cookie = binding) {
   );
 }
 
+function isInstagramRequest(value: string) {
+  const hostname = new URL(value).hostname;
+  return hostname === "api.instagram.com" || hostname === "graph.instagram.com";
+}
+
 function callbackFetch(oauthRecord: Record<string, unknown>, consume = true) {
   const calls: string[] = [];
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
@@ -153,7 +158,7 @@ describe("OAuth browser and session binding", () => {
         environment,
       );
       expect([400, 403]).toContain(response.status);
-      expect(calls.some((url) => url.includes("instagram.com"))).toBe(false);
+      expect(calls.some(isInstagramRequest)).toBe(false);
       expect(
         calls.some((url) => url.endsWith("/persist_bound_oauth_account")),
       ).toBe(false);
@@ -168,7 +173,7 @@ describe("OAuth browser and session binding", () => {
     expect(await response.json()).toEqual({
       error: "oauth_state_already_consumed",
     });
-    expect(calls.some((url) => url.includes("instagram.com"))).toBe(false);
+    expect(calls.some(isInstagramRequest)).toBe(false);
     expect(
       calls.some((url) => url.endsWith("/persist_bound_oauth_account")),
     ).toBe(false);
