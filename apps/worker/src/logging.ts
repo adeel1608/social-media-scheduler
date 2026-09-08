@@ -13,7 +13,9 @@ export type WorkerErrorCode =
   | "reviewer_stale_recovery_skipped"
   | "provider_revocation_incomplete"
   | "notification_reconciliation_failed"
-  | "media_retention_update_failed";
+  | "media_retention_update_failed"
+  | "uploadthing_route_failed"
+  | "uploadthing_delete_failed";
 
 interface WorkerErrorContext {
   requestId?: string;

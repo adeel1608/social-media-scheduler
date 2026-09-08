@@ -14,6 +14,7 @@ import {
 } from "./auth";
 import { ownerDatabase, SupabaseRest } from "./database";
 import type { Env } from "./env";
+import { logWorkerError } from "./logging";
 import {
   ReviewerDatabase,
   requireReviewerAuthorization,
@@ -299,7 +300,7 @@ export function createUploadThingRouter(
 ) {
   const upload = createUploadthing({
     errorFormatter(error) {
-      return { code: error.code, message: error.message };
+      return { code: error.code, message: "Upload could not be completed." };
     },
   });
   return {
@@ -323,16 +324,52 @@ export function createUploadThingRouter(
 
 export type UploadThingRouter = ReturnType<typeof createUploadThingRouter>;
 
-export function handleUploadThingRequest(env: Env, request: Request) {
-  const callbackUrl = new URL("/api/uploadthing", env.WORKER_PUBLIC_URL);
-  return createRouteHandler({
-    router: createUploadThingRouter(env),
-    config: {
-      token: env.UPLOADTHING_TOKEN,
-      callbackUrl: callbackUrl.toString(),
-      isDev: env.ENVIRONMENT !== "production",
-      handleDaemonPromise: env.ENVIRONMENT === "production" ? "await" : "void",
-      logLevel: env.ENVIRONMENT === "production" ? "Error" : "Warning",
+function uploadFailureClassification(status: number): string {
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "provider_failure";
+  return "request_rejected";
+}
+
+function sanitizedUploadThingErrorResponse(status: number): Response {
+  return Response.json(
+    {
+      code: "UPLOAD_FAILED",
+      message: "Upload could not be completed.",
     },
-  })(request);
+    { status },
+  );
+}
+
+export async function handleUploadThingRequest(
+  env: Env,
+  request: Request,
+): Promise<Response> {
+  const callbackUrl = new URL("/api/uploadthing", env.WORKER_PUBLIC_URL);
+  try {
+    const response = await createRouteHandler({
+      router: createUploadThingRouter(env),
+      config: {
+        token: env.UPLOADTHING_TOKEN,
+        callbackUrl: callbackUrl.toString(),
+        isDev: env.ENVIRONMENT !== "production",
+        handleDaemonPromise:
+          env.ENVIRONMENT === "production" ? "await" : "void",
+        logLevel: "None",
+      },
+    })(request);
+    if (!response.ok) {
+      logWorkerError("uploadthing_route_failed", {
+        state: "upload_route",
+        classification: uploadFailureClassification(response.status),
+      });
+      return sanitizedUploadThingErrorResponse(response.status);
+    }
+    return response;
+  } catch {
+    logWorkerError("uploadthing_route_failed", {
+      state: "upload_route",
+      classification: "provider_failure",
+    });
+    return sanitizedUploadThingErrorResponse(500);
+  }
 }

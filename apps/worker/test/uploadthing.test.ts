@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Env } from "../src/env";
 import {
@@ -9,6 +9,8 @@ import {
 } from "../src/uploadthing";
 
 const mediaId = "123e4567-e89b-42d3-a456-426614174000";
+
+afterEach(() => vi.restoreAllMocks());
 
 function token() {
   return btoa(
@@ -197,6 +199,7 @@ describe("UploadThing callbacks", () => {
   });
 
   it("rejects an unsigned callback before application completion runs", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     const response = await handleUploadThingRequest(
       env(),
       new Request("https://worker.example.test/api/uploadthing?slug=media", {
@@ -211,8 +214,12 @@ describe("UploadThing callbacks", () => {
     );
 
     expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      message: "Invalid signature",
+    await expect(response.json()).resolves.toEqual({
+      code: "UPLOAD_FAILED",
+      message: "Upload could not be completed.",
     });
+    expect(errorLog).toHaveBeenCalledWith(
+      '{"level":"error","message":"uploadthing_route_failed","state":"upload_route","classification":"request_rejected"}',
+    );
   });
 });

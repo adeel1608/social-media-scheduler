@@ -26,7 +26,10 @@ const environment = {
   UPLOADTHING_TOKEN: uploadThingToken(),
 } as Env;
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 function mockDeletion(providerOk: boolean) {
   const mediaWrites: Array<{
@@ -100,6 +103,7 @@ describe("trusted media cleanup mutation boundary", () => {
   });
 
   it("does not release quota when provider deletion is not confirmed", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     const { mediaWrites, providerCalls } = mockDeletion(false);
     const response = await request();
     expect(response.status).toBe(502);
@@ -111,5 +115,19 @@ describe("trusted media cleanup mutation boundary", () => {
       deletion_last_error: "provider_delete_not_confirmed",
     });
     expect(mediaWrites.some((write) => "deleted_at" in write.body)).toBe(false);
+    expect(
+      mediaWrites.some((write) => "provider_deleted_at" in write.body),
+    ).toBe(false);
+    expect(
+      mediaWrites.some((write) => write.body.upload_status === "deleted"),
+    ).toBe(false);
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    expect(errorLog).toHaveBeenCalledWith(
+      '{"level":"error","message":"uploadthing_delete_failed","state":"delete_file","classification":"provider_failure"}',
+    );
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(providerKey);
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(
+      "synthetic_failure",
+    );
   });
 });

@@ -1,6 +1,7 @@
 import { UTApi } from "uploadthing/server";
 
 import type { Env } from "./env";
+import { logWorkerError } from "./logging";
 
 export const ACTIVE_MEDIA_LIMIT_BYTES = Math.floor(1.8 * 1024 ** 3);
 export const REVIEWER_MEDIA_LIMIT_BYTES = Math.floor(
@@ -567,7 +568,7 @@ export function uploadThingDeletionClient(
   return new UTApi({
     token: env.UPLOADTHING_TOKEN,
     fetch: fetcher,
-    logLevel: "Error",
+    logLevel: "None",
   });
 }
 
@@ -577,8 +578,25 @@ export async function deleteUploadThingFile(
   keyType: "fileKey" | "customId" = "fileKey",
   client: UploadThingDeletionClient = uploadThingDeletionClient(env),
 ) {
-  const result = await client.deleteFiles(identifier, { keyType });
+  let result: Awaited<ReturnType<UploadThingDeletionClient["deleteFiles"]>>;
+  try {
+    result = await client.deleteFiles(identifier, { keyType });
+  } catch {
+    logWorkerError("uploadthing_delete_failed", {
+      state: "delete_file",
+      classification: "provider_failure",
+    });
+    throw new MediaStorageError(
+      "provider_delete_failed",
+      502,
+      "UploadThing did not confirm media deletion.",
+    );
+  }
   if (!result.success) {
+    logWorkerError("uploadthing_delete_failed", {
+      state: "delete_file",
+      classification: "provider_rejected",
+    });
     throw new MediaStorageError(
       "provider_delete_failed",
       502,
