@@ -135,7 +135,20 @@ describe("production deployment safety", () => {
     expect(ciWorkflow).toContain("corepack pnpm exec supabase start");
     expect(ciWorkflow).toContain("corepack pnpm db:test");
     expect(ciWorkflow).toContain("corepack pnpm db:integration");
-    expect(ciWorkflow).toContain("all seventeen migrations");
+    const previousSchema = ciWorkflow.indexOf(
+      "mv supabase/migrations/202609070009_analytics_generation_isolation.sql",
+    );
+    const disposableStart = ciWorkflow.indexOf(
+      "corepack pnpm exec supabase start",
+    );
+    const forwardUpgrade = ciWorkflow.indexOf(
+      "corepack pnpm exec supabase migration up --local",
+    );
+    const databaseTests = ciWorkflow.indexOf("corepack pnpm db:test");
+    expect(previousSchema).toBeGreaterThan(0);
+    expect(disposableStart).toBeGreaterThan(previousSchema);
+    expect(forwardUpgrade).toBeGreaterThan(disposableStart);
+    expect(databaseTests).toBeGreaterThan(forwardUpgrade);
     expect(ciWorkflow).toContain(
       "corepack pnpm exec supabase stop --no-backup",
     );
