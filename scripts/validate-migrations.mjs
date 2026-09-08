@@ -31,6 +31,15 @@ const mediaLeastPrivilegeMigrationSql = files.includes(
       files.indexOf(mediaLeastPrivilegeMigrationFile)
     ].toLowerCase()
   : "";
+const analyticsIsolationMigrationFile =
+  "202609070009_analytics_generation_isolation.sql";
+const analyticsIsolationMigrationSql = files.includes(
+  analyticsIsolationMigrationFile,
+)
+  ? migrationContents[
+      files.indexOf(analyticsIsolationMigrationFile)
+    ].toLowerCase()
+  : "";
 const requiredTables = [
   "installation_settings",
   "connected_accounts",
@@ -166,6 +175,32 @@ const requirements = {
     ) &&
     mediaLeastPrivilegeMigrationSql.includes(
       "not has_table_privilege('authenticated', 'public.media_assets', 'update')",
+    ),
+  "reviewer analytics generation isolation":
+    analyticsIsolationMigrationSql.includes(
+      "add column authorization_generation uuid",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "analytics_snapshots_review_generation_idx",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "function public.list_meta_review_analytics",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "p_generation = app_private.current_review_generation(p_reviewer_id)",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "new.authorization_generation := target_generation",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "revoke select on table public.analytics_snapshots from service_role",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "grant execute on function public.list_meta_review_analytics",
+    ) &&
+    analyticsIsolationMigrationSql.includes("to service_role") &&
+    analyticsIsolationMigrationSql.includes(
+      "create or replace function public.verify_meta_review_schema()",
     ),
 };
 if (missingTables.length || Object.values(requirements).includes(false)) {

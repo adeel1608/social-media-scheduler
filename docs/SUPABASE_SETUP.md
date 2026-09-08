@@ -24,8 +24,10 @@ local-development, database-testing, and RLS documentation on 2026-09-05.
    `claim_stale_targets`, a zero-row notification-schema query, and the
    `verify_phase_2b_schema` preflight for durable disconnect recovery, and the
    `verify_meta_review_schema` preflight for the temporary isolated reviewer
-   workspace; it stops before Worker deployment if any required migration is
-   missing or inaccessible.
+   workspace, including generation-isolated analytics; it stops before Worker
+   deployment if any required migration is missing or inaccessible. Apply the
+   database migrations before the Worker so the old Worker fails closed on
+   reviewer analytics and the new Worker never runs against an older schema.
 
 4. Authentication > URL Configuration: set Site URL to the exact HTTPS web
    origin and add `https://YOUR_WEB_HOST/dashboard` plus the local callback used

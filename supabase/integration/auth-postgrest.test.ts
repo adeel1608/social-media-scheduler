@@ -831,4 +831,322 @@ describe.sequential("real disposable Auth and PostgREST", () => {
       },
     ]);
   });
+
+  it("isolates analytics across reviewer generations through real PostgREST", async () => {
+    const analyticsReviewerId = crypto.randomUUID();
+    const replacementId = crypto.randomUUID();
+    const analyticsEmail = `analytics-reviewer-${suffix}@example.com`;
+    await createUser(analyticsReviewerId, analyticsEmail);
+    const g1 = (await rpc("set_meta_review_authorization", {
+      p_user_id: analyticsReviewerId,
+      p_email: analyticsEmail,
+      p_enabled: true,
+      p_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    })) as string;
+    const analyticsJwt = await signIn(analyticsEmail);
+
+    const createAnalyticsLineage = async (
+      label: string,
+      generation: string,
+    ) => {
+      const accountId = crypto.randomUUID();
+      const postId = crypto.randomUUID();
+      const targetId = crypto.randomUUID();
+      const snapshotId = crypto.randomUUID();
+      await json("/rest/v1/connected_accounts", {
+        method: "POST",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          id: accountId,
+          owner_id: analyticsReviewerId,
+          platform: "instagram",
+          remote_account_id: `${label}-${suffix}`,
+          encrypted_access_token: "cipher",
+          access_token_nonce: "nonce",
+          encryption_key_version: "v1",
+          connection_status: "connected",
+          authorization_context: "meta_review",
+          authorization_generation: generation,
+        }),
+      });
+      await json("/rest/v1/posts", {
+        method: "POST",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          id: postId,
+          owner_id: analyticsReviewerId,
+          title: `${label}-private-title`,
+          base_caption: "",
+          authorization_context: "meta_review",
+          authorization_generation: generation,
+        }),
+      });
+      await json("/rest/v1/post_targets", {
+        method: "POST",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          id: targetId,
+          owner_id: analyticsReviewerId,
+          post_id: postId,
+          connected_account_id: accountId,
+          platform: "instagram",
+          status: "published",
+          scheduled_at_utc: new Date().toISOString(),
+          idempotency_key: `${label}-analytics-${suffix}`,
+          authorization_context: "meta_review",
+          authorization_generation: generation,
+          metadata: { private_marker: `${label}-metadata` },
+          remote_url: `https://review.invalid/${label}-remote`,
+        }),
+      });
+      await json("/rest/v1/analytics_snapshots", {
+        method: "POST",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          id: snapshotId,
+          owner_id: analyticsReviewerId,
+          post_target_id: targetId,
+          connected_account_id: accountId,
+          platform: "instagram",
+          authorization_generation: crypto.randomUUID(),
+          normalized_metrics: { marker: `${label}-normalized` },
+          raw_metrics: { marker: `${label}-raw` },
+        }),
+      });
+      return { accountId, postId, targetId, snapshotId };
+    };
+
+    const g1Ids = await createAnalyticsLineage("g1", g1);
+    const g1Rows = (await rpc("list_meta_review_analytics", {
+      p_reviewer_id: analyticsReviewerId,
+      p_generation: g1,
+      p_target_id: null,
+      p_from: null,
+      p_to: null,
+      p_limit: 500,
+    })) as Array<Record<string, unknown>>;
+    expect(g1Rows).toHaveLength(1);
+    expect(g1Rows[0]).toMatchObject({
+      id: g1Ids.snapshotId,
+      post_target_id: g1Ids.targetId,
+      raw_metrics: { marker: "g1-raw" },
+      post_targets: {
+        metadata: { private_marker: "g1-metadata" },
+        remote_url: "https://review.invalid/g1-remote",
+        posts: { title: "g1-private-title" },
+      },
+    });
+    expect(
+      await json(
+        "/rest/v1/analytics_snapshots?select=id,raw_metrics",
+        {},
+        analyticsJwt,
+        anonKey,
+      ),
+    ).toEqual([]);
+    expect(
+      (
+        await api(
+          "/rest/v1/analytics_snapshots?select=id",
+          {},
+          serviceKey,
+          serviceKey,
+        )
+      ).ok,
+    ).toBe(false);
+    for (const [token, key] of [
+      [anonKey, anonKey],
+      [analyticsJwt, anonKey],
+    ] as const) {
+      expect(
+        (
+          await api(
+            "/rest/v1/rpc/list_meta_review_analytics",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                p_reviewer_id: analyticsReviewerId,
+                p_generation: g1,
+              }),
+            },
+            token,
+            key,
+          )
+        ).ok,
+      ).toBe(false);
+    }
+
+    await rpc("set_meta_review_authorization", {
+      p_user_id: analyticsReviewerId,
+      p_email: analyticsEmail,
+      p_enabled: false,
+      p_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const g2 = (await rpc("set_meta_review_authorization", {
+      p_user_id: analyticsReviewerId,
+      p_email: analyticsEmail,
+      p_enabled: true,
+      p_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    })) as string;
+    expect(g2).not.toBe(g1);
+    const read = (generationValue: unknown, targetId: unknown = null) =>
+      rpc("list_meta_review_analytics", {
+        p_reviewer_id: analyticsReviewerId,
+        p_generation: generationValue,
+        p_target_id: targetId,
+        p_from: null,
+        p_to: null,
+        p_limit: 500,
+      });
+    expect(await read(g2)).toEqual([]);
+    expect(await read(g2, g1Ids.targetId)).toEqual([]);
+    expect(await read(g2, g1Ids.snapshotId)).toEqual([]);
+    expect(await read(g2, g1Ids.postId)).toEqual([]);
+    expect(await read(g1)).toEqual([]);
+    expect(await read(null)).toEqual([]);
+
+    const missingGeneration = await api(
+      "/rest/v1/rpc/list_meta_review_analytics",
+      {
+        method: "POST",
+        body: JSON.stringify({ p_reviewer_id: analyticsReviewerId }),
+      },
+    );
+    const malformedGeneration = await api(
+      "/rest/v1/rpc/list_meta_review_analytics",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          p_reviewer_id: analyticsReviewerId,
+          p_generation: "malformed-generation",
+        }),
+      },
+    );
+    expect(missingGeneration.ok).toBe(false);
+    expect(malformedGeneration.ok).toBe(false);
+    const rejectedBodies = `${await missingGeneration.text()} ${await malformedGeneration.text()}`;
+    for (const privateValue of [
+      "g1-raw",
+      "g1-private-title",
+      "g1-metadata",
+      "g1-remote",
+    ]) {
+      expect(rejectedBodies).not.toContain(privateValue);
+    }
+
+    const g2Ids = await createAnalyticsLineage("g2", g2);
+    expect(await read(g2)).toEqual([
+      expect.objectContaining({
+        id: g2Ids.snapshotId,
+        post_target_id: g2Ids.targetId,
+        raw_metrics: { marker: "g2-raw" },
+      }),
+    ]);
+    expect(await read(g1, g2Ids.targetId)).toEqual([]);
+
+    const ownerAccountId = crypto.randomUUID();
+    const ownerPostId = crypto.randomUUID();
+    const ownerTargetId = crypto.randomUUID();
+    const ownerSnapshotId = crypto.randomUUID();
+    await json("/rest/v1/connected_accounts", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        id: ownerAccountId,
+        owner_id: ownerId,
+        platform: "instagram",
+        remote_account_id: `owner-analytics-${suffix}`,
+        encrypted_access_token: "cipher",
+        access_token_nonce: "nonce",
+        encryption_key_version: "v1",
+        authorization_context: "owner",
+      }),
+    });
+    await json("/rest/v1/posts", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        id: ownerPostId,
+        owner_id: ownerId,
+        title: "Owner analytics positive control",
+        base_caption: "",
+        authorization_context: "owner",
+      }),
+    });
+    await json("/rest/v1/post_targets", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        id: ownerTargetId,
+        owner_id: ownerId,
+        post_id: ownerPostId,
+        connected_account_id: ownerAccountId,
+        platform: "instagram",
+        status: "published",
+        scheduled_at_utc: new Date().toISOString(),
+        idempotency_key: `owner-analytics-${suffix}`,
+        authorization_context: "owner",
+      }),
+    });
+    await json("/rest/v1/analytics_snapshots", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        id: ownerSnapshotId,
+        owner_id: ownerId,
+        post_target_id: ownerTargetId,
+        connected_account_id: ownerAccountId,
+        platform: "instagram",
+        authorization_generation: g2,
+        normalized_metrics: { owner: true },
+      }),
+    });
+    expect(
+      await json(
+        `/rest/v1/analytics_snapshots?id=eq.${ownerSnapshotId}&select=id,normalized_metrics,authorization_generation`,
+        {},
+        ownerJwt,
+        anonKey,
+      ),
+    ).toEqual([
+      {
+        id: ownerSnapshotId,
+        normalized_metrics: { owner: true },
+        authorization_generation: null,
+      },
+    ]);
+    expect(
+      await json(
+        `/rest/v1/analytics_snapshots?id=in.(${ownerSnapshotId},${g2Ids.snapshotId})&select=id`,
+        {},
+        unrelatedJwt,
+        anonKey,
+      ),
+    ).toEqual([]);
+
+    await json(`/auth/v1/admin/users/${analyticsReviewerId}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        email: `retired-analytics-${suffix}@example.com`,
+        email_confirm: true,
+      }),
+    });
+    await createUser(replacementId, analyticsEmail);
+    const replacementGeneration = (await rpc("set_meta_review_authorization", {
+      p_user_id: replacementId,
+      p_email: analyticsEmail,
+      p_enabled: true,
+      p_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    })) as string;
+    expect(
+      await rpc("list_meta_review_analytics", {
+        p_reviewer_id: replacementId,
+        p_generation: replacementGeneration,
+        p_target_id: null,
+        p_from: null,
+        p_to: null,
+        p_limit: 500,
+      }),
+    ).toEqual([]);
+  });
 });

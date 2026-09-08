@@ -426,7 +426,6 @@ app.get("/api/queue", async (c) => {
 
 app.get("/api/analytics", async (c) => {
   const reviewer = c.get("accessRole") === "meta_reviewer";
-  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
   const requestedPlatform = c.req.query("platform");
   const platform = platformSchema.safeParse(requestedPlatform);
   if (requestedPlatform && !platform.success)
@@ -440,18 +439,26 @@ app.get("/api/analytics", async (c) => {
     (to && !/^\d{4}-\d{2}-\d{2}$/.test(to))
   )
     return c.json({ error: "invalid_date_range" }, 400);
+  if (reviewer) {
+    const data = await serviceDatabase(c).rpc("list_meta_review_analytics", {
+      p_reviewer_id: c.get("user").id,
+      p_generation: c.get("reviewGeneration"),
+      p_target_id: null,
+      p_from: from ? `${from}T00:00:00Z` : null,
+      p_to: to ? `${to}T23:59:59Z` : null,
+      p_limit: 500,
+    });
+    return c.json({ data });
+  }
+  const db = ownerDatabase(c.env, c.get("jwt"));
   const filters = [
     `owner_id=eq.${c.get("user").id}`,
-    reviewer ? "platform=eq.instagram" : "",
     platform.success ? `platform=eq.${platform.data}` : "",
     from ? `captured_at=gte.${from}T00:00:00Z` : "",
     to ? `captured_at=lte.${to}T23:59:59Z` : "",
   ].filter(Boolean);
-  if (reviewer)
-    filters.push("post_targets.authorization_context=eq.meta_review");
-  const targetRelation = reviewer ? "post_targets!inner" : "post_targets";
   const data = await db.select(
-    `analytics_snapshots?${filters.join("&")}&select=id,post_target_id,platform,captured_at,period_start,period_end,normalized_metrics,raw_metrics,unavailable_metrics,${targetRelation}(metadata,remote_url,posts(title))&order=captured_at.desc&limit=500`,
+    `analytics_snapshots?${filters.join("&")}&select=id,post_target_id,platform,captured_at,period_start,period_end,normalized_metrics,raw_metrics,unavailable_metrics,post_targets(metadata,remote_url,posts(title))&order=captured_at.desc&limit=500`,
   );
   return c.json({ data });
 });
@@ -460,17 +467,21 @@ app.get("/api/analytics/:targetId", async (c) => {
   const targetId = c.req.param("targetId");
   if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(targetId))
     return c.json({ error: "invalid_target_id" }, 400);
-  const db =
-    c.get("accessRole") === "meta_reviewer"
-      ? serviceDatabase(c)
-      : ownerDatabase(c.env, c.get("jwt"));
   const reviewer = c.get("accessRole") === "meta_reviewer";
-  const platformFilter = reviewer
-    ? "&platform=eq.instagram&post_targets.authorization_context=eq.meta_review"
-    : "";
-  const targetRelation = reviewer ? "post_targets!inner" : "post_targets";
+  if (reviewer) {
+    const data = await serviceDatabase(c).rpc("list_meta_review_analytics", {
+      p_reviewer_id: c.get("user").id,
+      p_generation: c.get("reviewGeneration"),
+      p_target_id: targetId,
+      p_from: null,
+      p_to: null,
+      p_limit: 500,
+    });
+    return c.json({ data });
+  }
+  const db = ownerDatabase(c.env, c.get("jwt"));
   const data = await db.select(
-    `analytics_snapshots?owner_id=eq.${c.get("user").id}${platformFilter}&post_target_id=eq.${encodeURIComponent(targetId)}&select=id,post_target_id,platform,captured_at,period_start,period_end,normalized_metrics,raw_metrics,unavailable_metrics,${targetRelation}(metadata,remote_url,posts(title))&order=captured_at.desc&limit=500`,
+    `analytics_snapshots?owner_id=eq.${c.get("user").id}&post_target_id=eq.${encodeURIComponent(targetId)}&select=id,post_target_id,platform,captured_at,period_start,period_end,normalized_metrics,raw_metrics,unavailable_metrics,post_targets(metadata,remote_url,posts(title))&order=captured_at.desc&limit=500`,
   );
   return c.json({ data });
 });

@@ -18,6 +18,13 @@ const metaReviewSql = readFileSync(
   resolve(migrationDirectory, "202609060001_meta_review_access.sql"),
   "utf8",
 ).toLowerCase();
+const analyticsIsolationSql = readFileSync(
+  resolve(
+    migrationDirectory,
+    "202609070009_analytics_generation_isolation.sql",
+  ),
+  "utf8",
+).toLowerCase();
 
 describe("Supabase migrations", () => {
   it("enables RLS on every owner data table", () => {
@@ -111,6 +118,30 @@ describe("Supabase migrations", () => {
     expect(metaReviewSql).toContain("to service_role");
     expect(metaReviewSql).toContain(
       "new.authorization_context = 'meta_review'",
+    );
+  });
+
+  it("isolates reviewer analytics by current authorization generation", () => {
+    expect(migrationFiles).toContain(
+      "202609070009_analytics_generation_isolation.sql",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "add column authorization_generation uuid",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "function public.list_meta_review_analytics",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "p_generation = app_private.current_review_generation(p_reviewer_id)",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "new.authorization_generation := target_generation",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "revoke select on table public.analytics_snapshots from service_role",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "create or replace function public.verify_meta_review_schema()",
     );
   });
 });

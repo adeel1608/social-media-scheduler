@@ -31,33 +31,48 @@ const environment = {
   META_REVIEWER_USER_ID: reviewerId,
 } as Env;
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 function reviewerFetch(databaseRows: unknown[] = []) {
   const databaseUrls: string[] = [];
-  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.endsWith("/auth/v1/user")) {
-      return Response.json({
-        id: reviewerId,
-        email: "reviewer@postline.dev",
-        exp: Math.floor(Date.now() / 1_000) + 600,
+  const databaseRequests: Array<{
+    url: string;
+    method: string;
+    body: unknown;
+  }> = [];
+  const fetcher = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth/v1/user")) {
+        return Response.json({
+          id: reviewerId,
+          email: "reviewer@postline.dev",
+          exp: Math.floor(Date.now() / 1_000) + 600,
+        });
+      }
+      if (url.includes("/auth/v1/admin/users/"))
+        return Response.json({
+          id: reviewerId,
+          email: "reviewer@postline.dev",
+          email_confirmed_at: new Date().toISOString(),
+          banned_until: null,
+        });
+      if (url.endsWith("/rest/v1/rpc/current_meta_review_authorization"))
+        return Response.json({ generation });
+      databaseUrls.push(url);
+      databaseRequests.push({
+        url,
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : null,
       });
-    }
-    if (url.includes("/auth/v1/admin/users/"))
-      return Response.json({
-        id: reviewerId,
-        email: "reviewer@postline.dev",
-        email_confirmed_at: new Date().toISOString(),
-        banned_until: null,
-      });
-    if (url.endsWith("/rest/v1/rpc/current_meta_review_authorization"))
-      return Response.json({ generation });
-    databaseUrls.push(url);
-    return Response.json(databaseRows);
-  });
+      return Response.json(databaseRows);
+    },
+  );
   vi.stubGlobal("fetch", fetcher);
-  return { fetcher, databaseUrls };
+  return { fetcher, databaseUrls, databaseRequests };
 }
 
 function apiRequest(path: string, method = "GET") {
@@ -136,15 +151,120 @@ describe("Meta reviewer HTTP isolation", () => {
     const mediaResponse = await apiRequest(`/api/media/${ownerId}`, "DELETE");
     expect(mediaResponse.status).toBe(404);
     expect(media.databaseUrls[0]).toContain(`owner_id=eq.${reviewerId}`);
+  });
 
-    vi.unstubAllGlobals();
-    const analytics = reviewerFetch();
-    const analyticsResponse = await apiRequest(`/api/analytics/${ownerId}`);
-    expect(analyticsResponse.status).toBe(200);
-    expect(analytics.databaseUrls[0]).toContain(`owner_id=eq.${reviewerId}`);
-    expect(analytics.databaseUrls[0]).toContain("platform=eq.instagram");
-    expect(analytics.databaseUrls[0]).toContain(
-      "post_targets.authorization_context=eq.meta_review",
+  it("uses the same current-generation RPC for list and direct analytics", async () => {
+    const analytics = reviewerFetch([
+      {
+        id: "33333333-3333-4333-8333-333333333333",
+        raw_metrics: { authorized: true },
+      },
+    ]);
+    const list = await apiRequest(
+      "/api/analytics?platform=instagram&from=2026-09-01&to=2026-09-08",
+    );
+    const direct = await apiRequest(`/api/analytics/${ownerId}`);
+
+    expect(list.status).toBe(200);
+    expect(direct.status).toBe(200);
+    expect(await list.json()).toEqual({
+      data: [
+        {
+          id: "33333333-3333-4333-8333-333333333333",
+          raw_metrics: { authorized: true },
+        },
+      ],
+    });
+    expect(analytics.databaseUrls).toHaveLength(2);
+    expect(
+      analytics.databaseUrls.every((url) =>
+        url.endsWith("/rest/v1/rpc/list_meta_review_analytics"),
+      ),
+    ).toBe(true);
+    expect(analytics.databaseUrls.some((url) => url.includes("?"))).toBe(false);
+    expect(analytics.databaseRequests).toEqual([
+      {
+        url: `${environment.SUPABASE_URL}/rest/v1/rpc/list_meta_review_analytics`,
+        method: "POST",
+        body: {
+          p_reviewer_id: reviewerId,
+          p_generation: generation,
+          p_target_id: null,
+          p_from: "2026-09-01T00:00:00Z",
+          p_to: "2026-09-08T23:59:59Z",
+          p_limit: 500,
+        },
+      },
+      {
+        url: `${environment.SUPABASE_URL}/rest/v1/rpc/list_meta_review_analytics`,
+        method: "POST",
+        body: {
+          p_reviewer_id: reviewerId,
+          p_generation: generation,
+          p_target_id: ownerId,
+          p_from: null,
+          p_to: null,
+          p_limit: 500,
+        },
+      },
+    ]);
+  });
+
+  it("fails safely when authorization rotates before analytics retrieval", async () => {
+    const secretCanaries = [
+      "raw-metric-canary",
+      "private-title-canary",
+      "remote-url-canary",
+      "metadata-canary",
+    ];
+    let grantChecks = 0;
+    const databaseUrls: string[] = [];
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/v1/user")) {
+          return Response.json({
+            id: reviewerId,
+            email: "reviewer@postline.dev",
+            exp: Math.floor(Date.now() / 1_000) + 600,
+          });
+        }
+        if (url.includes("/auth/v1/admin/users/")) {
+          return Response.json({
+            id: reviewerId,
+            email: "reviewer@postline.dev",
+            email_confirmed_at: new Date().toISOString(),
+            banned_until: null,
+          });
+        }
+        if (url.endsWith("/rest/v1/rpc/current_meta_review_authorization")) {
+          grantChecks += 1;
+          return Response.json({
+            generation:
+              grantChecks === 1
+                ? generation
+                : "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          });
+        }
+        databaseUrls.push(url);
+        return Response.json(
+          secretCanaries.map((value) => ({ sensitive_value: value })),
+        );
+      }),
+    );
+
+    const response = await apiRequest("/api/analytics");
+    const body = JSON.stringify(await response.json());
+    expect(response.status).toBe(500);
+    expect(body).toBe(
+      '{"error":"request_failed","message":"The request could not be completed safely."}',
+    );
+    expect(databaseUrls).toEqual([]);
+    for (const canary of secretCanaries) expect(body).not.toContain(canary);
+    expect(errorLog).toHaveBeenCalledWith(
+      '{"level":"error","message":"request_failed"}',
     );
   });
 

@@ -108,9 +108,13 @@ export class ReviewerDatabase extends SupabaseRest {
     );
     const table = path.split("?")[0] ?? "";
     if (
-      ["connected_accounts", "posts", "post_targets", "media_assets"].includes(
-        table,
-      ) &&
+      [
+        "connected_accounts",
+        "posts",
+        "post_targets",
+        "media_assets",
+        "analytics_snapshots",
+      ].includes(table) &&
       (init.method === undefined ||
         ["GET", "PATCH", "DELETE"].includes(init.method))
     ) {

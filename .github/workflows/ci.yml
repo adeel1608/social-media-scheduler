@@ -32,9 +32,12 @@ jobs:
       - run: corepack pnpm test
       - run: corepack pnpm build:verify
       - run: corepack pnpm db:validate
-      - name: Start disposable Supabase and apply all seventeen migrations
+      - name: Start disposable Supabase and verify the forward schema upgrade
         run: |
+          mv supabase/migrations/202609070009_analytics_generation_isolation.sql /tmp/202609070009_analytics_generation_isolation.sql
           corepack pnpm exec supabase start > /tmp/postline-supabase-start.log 2>&1
+          mv /tmp/202609070009_analytics_generation_isolation.sql supabase/migrations/202609070009_analytics_generation_isolation.sql
+          corepack pnpm exec supabase migration up --local
           corepack pnpm exec supabase migration list --local
       - name: Verify migrations against PostgreSQL
         run: corepack pnpm db:test

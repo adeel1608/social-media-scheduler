@@ -83,9 +83,10 @@ Do this manually immediately before the review window:
 
 1. Apply and verify the additive migrations from
    `202609060001_meta_review_access.sql` through
-   `202609070006_generation_enforcement.sql` in a reviewed release. These add
+   `202609070009_analytics_generation_isolation.sql` in a reviewed release. These add
    browser/session-bound OAuth, current reviewer authorization, publication
-   fencing, service-only disconnect recovery and shared upload quota controls.
+   fencing, service-only disconnect recovery, shared upload quota controls and
+   generation-isolated analytics reads.
    Do not deploy
    code that depends on it until `verify_meta_review_schema` returns
    `{"ready":true}` through the service-role production preflight.
@@ -147,8 +148,11 @@ corepack pnpm --dir apps/worker exec wrangler deploy --dry-run
 Inspect the inactive Worker version's binding **names**, confirm the three Meta
 review settings are present, confirm the four approval/live flags remain
 `false`, and run the migration preflight. Deploy the database migration first,
-then the reviewed Worker version, then Pages. Do not split queue traffic across
-versions with different reviewer gates.
+then require `verify_meta_review_schema` to report ready before deploying the
+reviewed Worker version, then Pages. Migration `202609070009` revokes direct
+service-role analytics reads so an old Worker fails closed, while the preflight
+prevents a new Worker from reaching an old schema. Do not split queue traffic
+across versions with different reviewer gates.
 
 In a clean/incognito browser, open:
 

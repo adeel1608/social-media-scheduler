@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Env } from "../src/env";
-import { requireReviewerAuthorization } from "../src/review-authorization";
+import {
+  ReviewerDatabase,
+  requireReviewerAuthorization,
+} from "../src/review-authorization";
 
 const reviewerId = "22222222-2222-4222-8222-222222222222";
 const generation = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -32,6 +35,8 @@ const currentUser = () => ({
   email_confirmed_at: new Date().toISOString(),
   banned_until: null,
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("authoritative reviewer lifecycle", () => {
   it("accepts only the current Auth identity and durable generation", async () => {
@@ -97,5 +102,29 @@ describe("authoritative reviewer lifecycle", () => {
         fetcher(currentUser(), null),
       ),
     ).rejects.toThrow("Reviewer authorization");
+  });
+
+  it("adds generation defense-in-depth to direct analytics table reads", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/auth/v1/admin/users/"))
+          return Response.json(currentUser());
+        if (url.endsWith("/rest/v1/rpc/current_meta_review_authorization"))
+          return Response.json({ generation });
+        requests.push(url);
+        return Response.json([]);
+      }),
+    );
+
+    await new ReviewerDatabase(environment, reviewerId, generation).select(
+      "analytics_snapshots?owner_id=eq.guessed&select=id",
+    );
+
+    expect(requests).toEqual([
+      `${environment.SUPABASE_URL}/rest/v1/analytics_snapshots?owner_id=eq.guessed&select=id&authorization_generation=eq.${generation}`,
+    ]);
   });
 });
