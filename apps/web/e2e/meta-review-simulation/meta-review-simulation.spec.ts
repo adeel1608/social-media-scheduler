@@ -6,7 +6,7 @@ import {
   type Route,
 } from "@playwright/test";
 import { randomBytes } from "node:crypto";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,6 +28,10 @@ const postId = "40000000-0000-4000-8000-000000000001";
 const accountId = "50000000-0000-4000-8000-000000000001";
 const initialAuthorizationGeneration = "60000000-0000-4000-8000-000000000002";
 const fixtureImage = resolve(repositoryRoot, "docs/screenshots/composer.png");
+const profileImage = await readFile(
+  resolve(repositoryRoot, "apps/web/e2e/meta-review-simulation/profile.svg"),
+  "utf8",
+);
 
 type CounterName =
   | "password_auth"
@@ -166,6 +170,15 @@ class SimulationBackend {
         contentType: "application/json",
         body: JSON.stringify(value),
       });
+
+    if (url.pathname === "/profile.svg") {
+      await route.fulfill({
+        status: 200,
+        contentType: "image/svg+xml",
+        body: profileImage,
+      });
+      return true;
+    }
 
     if (url.pathname === "/simulation/internal/password-auth") {
       this.increment("password_auth");
