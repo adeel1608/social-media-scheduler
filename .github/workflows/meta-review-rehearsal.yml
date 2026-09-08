@@ -1,0 +1,53 @@
+name: Meta review rehearsal
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: meta-review-rehearsal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rehearse:
+    name: Generate isolated rehearsal artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Enable pinned pnpm
+        run: corepack enable && corepack prepare pnpm@11.25.0 --activate
+      - run: corepack pnpm install --frozen-lockfile
+      - name: Verify source, production builds and simulation isolation
+        run: |
+          corepack pnpm check
+          node scripts/verify-simulation-isolation.mjs
+      - name: Start disposable Supabase
+        run: corepack pnpm exec supabase start
+      - name: Verify PostgreSQL migrations and RLS
+        run: corepack pnpm db:test
+      - name: Verify real Auth and PostgREST boundaries
+        run: corepack pnpm db:integration
+      - name: Stop disposable Supabase
+        if: always()
+        run: corepack pnpm exec supabase stop --no-backup
+      - name: Install Chromium and video tools
+        run: |
+          corepack pnpm exec playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+      - name: Generate and validate local-only rehearsal
+        run: corepack pnpm meta-review:rehearsal
+      - run: corepack pnpm audit --audit-level high
+      - name: Upload rehearsal recordings and report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: meta-review-rehearsal-${{ github.sha }}
+          path: artifacts/meta-review-rehearsal/${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
