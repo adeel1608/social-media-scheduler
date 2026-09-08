@@ -87,3 +87,39 @@ jobs:
         with:
           languages: javascript-typescript
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+
+  meta-review-rehearsal:
+    name: Generate isolated Meta rehearsal artifacts
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.head_ref == 'feat/meta-review-simulation'
+    needs:
+      - verify
+      - e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Enable pinned pnpm
+        run: corepack enable && corepack prepare pnpm@11.25.0 --activate
+      - run: corepack pnpm install --frozen-lockfile
+      - run: node scripts/verify-simulation-isolation.mjs
+      - name: Install Chromium and video tools
+        run: |
+          corepack pnpm exec playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+      - name: Generate and validate local-only rehearsal
+        run: corepack pnpm meta-review:rehearsal
+      - name: Upload rehearsal recordings and report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: meta-review-rehearsal-${{ github.event.pull_request.head.sha }}
+          path: artifacts/meta-review-rehearsal/${{ github.event.pull_request.head.sha }}
+          if-no-files-found: error
+          retention-days: 7

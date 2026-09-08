@@ -120,6 +120,18 @@ describe("production deployment safety", () => {
     expect(rehearsalWorkflow).toContain("corepack pnpm meta-review:rehearsal");
   });
 
+  it("bootstraps branch-head rehearsal artifacts without production authority", () => {
+    expect(ciWorkflow).toContain("meta-review-rehearsal:");
+    expect(ciWorkflow).toContain(
+      "github.head_ref == 'feat/meta-review-simulation'",
+    );
+    expect(ciWorkflow).toContain(
+      "ref: ${{ github.event.pull_request.head.sha }}",
+    );
+    expect(ciWorkflow).toContain("corepack pnpm meta-review:rehearsal");
+    expect(ciWorkflow).not.toMatch(/wrangler\s+deploy|pages\s+deploy/i);
+  });
+
   it("keeps real publishing disabled and queue recovery bounded", () => {
     expect(variables).toMatchObject({
       LIVE_TEST_CONFIRM: "false",

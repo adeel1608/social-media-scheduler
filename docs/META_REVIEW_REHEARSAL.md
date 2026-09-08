@@ -80,6 +80,12 @@ production environment, no secrets and no deploy command. It starts a disposable
 Supabase stack for pgTAP and real Auth/PostgREST verification, runs the complete
 checks, generates the browser rehearsal and uploads a seven-day artifact.
 
+GitHub cannot dispatch a newly introduced workflow until it exists on the
+default branch. For this workflow's draft PR only, the existing CI workflow has
+an exact-branch-gated artifact job. It checks out the pull request head SHA,
+waits for the ordinary verification and E2E jobs, then generates the same
+secret-free seven-day artifact. It has no production environment or deploy step.
+
 ## Recorded flows
 
 1. Password reviewer login, simulated Turnstile, restricted navigation, local
