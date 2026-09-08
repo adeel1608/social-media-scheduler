@@ -16,3 +16,4 @@ Thumbs.db
 supabase/.temp/
 public/uploads/
 local-media/
+artifacts/

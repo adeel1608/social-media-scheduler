@@ -15,6 +15,15 @@ const serverSecretSentinels = {
   CLOUDFLARE_API_TOKEN: "POSTLINE_TEST_CLOUDFLARE_TOKEN_MUST_NOT_APPEAR_7A4D",
   TURNSTILE_SECRET_KEY: "POSTLINE_TEST_TURNSTILE_SECRET_MUST_NOT_APPEAR_7A4D",
 };
+const simulationSentinels = [
+  "meta.reviewer@postline.example.test",
+  "owner@postline.example.test",
+  "postline_review_demo",
+  "SIMULATION_ONLY_",
+  "SIMULATION — NOT FOR META SUBMISSION",
+  "/simulation/internal/",
+  "IG_SIMULATION_ACCOUNT_0001",
+];
 const buildCommand =
   process.platform === "win32"
     ? {
@@ -67,6 +76,13 @@ for (const file of bundleFiles) {
     if (contents.includes(sentinel)) {
       throw new Error(
         `${name} server-only sentinel was included in the web bundle: ${file}`,
+      );
+    }
+  }
+  for (const sentinel of simulationSentinels) {
+    if (contents.includes(sentinel)) {
+      throw new Error(
+        `Test-only Meta review simulation data was included in the production web bundle: ${file}`,
       );
     }
   }
@@ -148,6 +164,12 @@ for (const file of reviewBundleFiles) {
     if (contents.includes(name) || contents.includes(sentinel))
       throw new Error(
         `Review-mode bundle included server-only ${name}: ${file}`,
+      );
+  }
+  for (const sentinel of simulationSentinels) {
+    if (contents.includes(sentinel))
+      throw new Error(
+        `Review-mode bundle included test-only Meta review simulation data: ${file}`,
       );
   }
 }

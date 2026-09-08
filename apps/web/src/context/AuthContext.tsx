@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { cancelPendingOAuth } from "../lib/api";
+import type { TurnstileApi } from "../lib/turnstile";
 
 const demoMode =
   import.meta.env.VITE_DEMO_MODE === "true" || import.meta.env.MODE === "e2e";
@@ -24,6 +25,14 @@ interface AuthContextValue {
   accessRole: "owner" | "meta_reviewer" | null;
   loading: boolean;
   demoMode: boolean;
+  simulationMode: boolean;
+  reviewerLoginEnabled: boolean;
+  turnstileSiteKeyOverride?: string;
+  turnstileLoader?: () => Promise<TurnstileApi>;
+  uploadSimulationFile?: (
+    file: File,
+    onProgress: (percent: number) => void,
+  ) => Promise<{ mediaId: string; objectKey: string }>;
   sendMagicLink(
     email: string,
     captchaToken: string,
@@ -36,17 +45,60 @@ interface AuthContextValue {
   signOut(): Promise<void>;
 }
 
+/**
+ * Explicit dependency injection for browser-only test harnesses. Production
+ * entrypoints never pass this adapter, and there is no environment variable,
+ * URL parameter, or global switch that can install one at runtime.
+ */
+export interface AuthTestAdapter {
+  readonly initialSession?: Session | null;
+  readonly initialAccessRole?: "owner" | "meta_reviewer" | null;
+  readonly turnstileSiteKey: string;
+  readonly loadTurnstile: () => Promise<TurnstileApi>;
+  sendMagicLink(
+    email: string,
+    captchaToken: string,
+  ): Promise<{ error?: string }>;
+  signInMetaReviewer(
+    email: string,
+    password: string,
+    captchaToken: string,
+  ): Promise<{
+    error?: string;
+    session?: Session;
+    accessRole?: "owner" | "meta_reviewer";
+  }>;
+  signOut(session: Session | null): Promise<void>;
+  uploadFile(
+    file: File,
+    onProgress: (percent: number) => void,
+  ): Promise<{ mediaId: string; objectKey: string }>;
+}
+
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(!demoMode && Boolean(supabase));
-  const [authInitialized, setAuthInitialized] = useState(demoMode || !supabase);
+export function AuthProvider({
+  children,
+  testAdapter,
+}: {
+  children: ReactNode;
+  testAdapter?: AuthTestAdapter;
+}) {
+  const [session, setSession] = useState<Session | null>(
+    testAdapter?.initialSession ?? null,
+  );
+  const [loading, setLoading] = useState(
+    testAdapter ? false : !demoMode && Boolean(supabase),
+  );
+  const [authInitialized, setAuthInitialized] = useState(
+    Boolean(testAdapter) || demoMode || !supabase,
+  );
   const [accessRole, setAccessRole] = useState<
     "owner" | "meta_reviewer" | null
-  >(demoMode ? "owner" : null);
+  >(testAdapter?.initialAccessRole ?? (demoMode ? "owner" : null));
 
   useEffect(() => {
+    if (testAdapter) return;
     if (!supabase) return;
     let active = true;
     void supabase.auth
@@ -66,10 +118,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       active = false;
       data.subscription.unsubscribe();
     };
-  }, []);
+  }, [testAdapter]);
 
   useEffect(() => {
-    if (!authInitialized || demoMode || !supabase) return;
+    if (testAdapter || !authInitialized || demoMode || !supabase) return;
     let active = true;
     if (!session) {
       setAccessRole(null);
@@ -107,7 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [authInitialized, session]);
+  }, [authInitialized, session, testAdapter]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -115,7 +167,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       accessRole,
       loading,
       demoMode,
+      simulationMode: Boolean(testAdapter),
+      reviewerLoginEnabled:
+        Boolean(testAdapter) ||
+        import.meta.env.VITE_META_REVIEW_MODE === "true",
+      ...(testAdapter
+        ? {
+            turnstileSiteKeyOverride: testAdapter.turnstileSiteKey,
+            turnstileLoader: testAdapter.loadTurnstile,
+            uploadSimulationFile: testAdapter.uploadFile,
+          }
+        : {}),
       async sendMagicLink(email, captchaToken) {
+        if (testAdapter) return testAdapter.sendMagicLink(email, captchaToken);
         if (!supabase)
           return {
             error: "Supabase is not configured. Use the setup guide first.",
@@ -139,6 +203,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           : {};
       },
       async signInMetaReviewer(email, password, captchaToken) {
+        if (testAdapter) {
+          const result = await testAdapter.signInMetaReviewer(
+            email,
+            password,
+            captchaToken,
+          );
+          if (result.session && result.accessRole) {
+            setSession(result.session);
+            setAccessRole(result.accessRole);
+          }
+          return result.error ? { error: result.error } : {};
+        }
         if (!supabase || import.meta.env.VITE_META_REVIEW_MODE !== "true") {
           return { error: "Reviewer sign-in is not available." };
         }
@@ -179,6 +255,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       },
       async signOut() {
+        if (testAdapter) {
+          try {
+            await testAdapter.signOut(session);
+          } finally {
+            setSession(null);
+            setAccessRole(null);
+          }
+          return;
+        }
         if (session) {
           try {
             await cancelPendingOAuth(session);
@@ -195,7 +280,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       },
     }),
-    [accessRole, loading, session],
+    [accessRole, loading, session, testAdapter],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

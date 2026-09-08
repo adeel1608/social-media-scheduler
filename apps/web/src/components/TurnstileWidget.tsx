@@ -18,13 +18,20 @@ interface TurnstileWidgetProperties {
   onTokenChange(token: string): void;
   action?: "owner_login" | "meta_reviewer_login";
   purpose?: "owner" | "reviewer";
+  loadApi?: () => Promise<TurnstileApi>;
 }
 
 export const TurnstileWidget = forwardRef<
   TurnstileWidgetHandle,
   TurnstileWidgetProperties
 >(function TurnstileWidget(
-  { siteKey, onTokenChange, action = "owner_login", purpose = "owner" },
+  {
+    siteKey,
+    onTokenChange,
+    action = "owner_login",
+    purpose = "owner",
+    loadApi = loadTurnstile,
+  },
   reference,
 ) {
   const containerReference = useRef<HTMLDivElement>(null);
@@ -62,7 +69,7 @@ export const TurnstileWidget = forwardRef<
       };
     }
 
-    void loadTurnstile()
+    void loadApi()
       .then((api) => {
         if (!active || !containerReference.current) return;
         apiReference.current = api;
@@ -111,7 +118,7 @@ export const TurnstileWidget = forwardRef<
       apiReference.current = null;
       widgetIdReference.current = null;
     };
-  }, [action, onTokenChange, purpose, siteKey]);
+  }, [action, loadApi, onTokenChange, purpose, siteKey]);
 
   return (
     <div

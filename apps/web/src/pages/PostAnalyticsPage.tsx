@@ -30,6 +30,7 @@ const metricLabels: Record<string, string> = {
   watch_time_minutes: "Watch time (minutes)",
   average_view_duration_seconds: "Average view duration (seconds)",
   followers_delta: "Audience change",
+  profile_actions: "Profile actions",
 };
 
 export function PostAnalyticsPage() {

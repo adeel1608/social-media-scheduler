@@ -84,7 +84,7 @@ const tomorrowInMelbourne = new Date(
 ).toLocaleDateString("en-CA", { timeZone: "Australia/Melbourne" });
 
 export function ComposerPage() {
-  const { demoMode, session, accessRole } = useAuth();
+  const { demoMode, session, accessRole, uploadSimulationFile } = useAuth();
   const reviewer = accessRole === "meta_reviewer";
   const availablePlatforms = reviewer
     ? (["instagram"] as const)
@@ -271,9 +271,9 @@ export function ComposerPage() {
       return;
     }
     try {
-      const uploaded = await uploadDirect(file, session, (progress) =>
-        update(progress),
-      );
+      const uploaded = uploadSimulationFile
+        ? await uploadSimulationFile(file, (progress) => update(progress))
+        : await uploadDirect(file, session, (progress) => update(progress));
       update(100, uploaded.mediaId);
     } catch (error) {
       update(0);
