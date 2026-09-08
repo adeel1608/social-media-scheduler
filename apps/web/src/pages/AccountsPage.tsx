@@ -15,7 +15,11 @@ import { useCallback, useEffect, useState } from "react";
 
 import { PlatformBadge } from "../components/PlatformBadge";
 import { useAuth } from "../context/AuthContext";
-import { apiRequest } from "../lib/api";
+import {
+  apiRequest,
+  completeOAuthNavigation,
+  startOAuthNavigation,
+} from "../lib/api";
 
 export interface ConnectedAccountSummary {
   id: string;
@@ -26,6 +30,7 @@ export interface ConnectedAccountSummary {
   approval_state: "approved" | "pending";
   stored_approval_state: "approved" | "pending" | "not_required" | "rejected";
   requires_reconnect: boolean;
+  review_testing_authorized?: boolean;
   metadata: {
     displayName?: string;
     accountType?: string;
@@ -68,31 +73,60 @@ function accountStatus(account: ConnectedAccountSummary): string {
 }
 
 function approvalStatus(account: ConnectedAccountSummary): string {
+  if (account.review_testing_authorized) {
+    return "Temporary Meta review testing is enabled for this workspace";
+  }
   return {
     approved: "Current Worker approval flag is enabled",
     pending: "Current Worker approval flag is false",
   }[account.approval_state];
 }
 
-function removeCallbackNotification(): Platform | null {
+function removeCallbackNotification(): {
+  connected: Platform | null;
+  pending: Platform | null;
+} {
   const url = new URL(window.location.href);
-  const value = url.searchParams.get("connected");
-  const platform = providerDetails.some((item) => item.platform === value)
-    ? (value as Platform)
+  const connectedValue = url.searchParams.get("connected");
+  const pendingValue =
+    url.searchParams.get("oauth") === "pending"
+      ? url.searchParams.get("platform")
+      : null;
+  const connected = providerDetails.some(
+    (item) => item.platform === connectedValue,
+  )
+    ? (connectedValue as Platform)
     : null;
-  if (url.searchParams.has("connected")) {
-    url.searchParams.delete("connected");
+  const pending = providerDetails.some((item) => item.platform === pendingValue)
+    ? (pendingValue as Platform)
+    : null;
+  if (
+    url.searchParams.has("connected") ||
+    url.searchParams.has("oauth") ||
+    url.searchParams.has("platform")
+  ) {
+    for (const name of ["connected", "oauth", "platform"])
+      url.searchParams.delete(name);
     window.history.replaceState(
       {},
       "",
       `${url.pathname}${url.search}${url.hash}`,
     );
   }
-  return platform;
+  return { connected, pending };
 }
 
 export function AccountsPage() {
-  const { demoMode, loading: authenticationLoading, session } = useAuth();
+  const {
+    demoMode,
+    loading: authenticationLoading,
+    session,
+    accessRole,
+  } = useAuth();
+  const reviewer = accessRole === "meta_reviewer";
+  const visibleProviders = reviewer
+    ? providerDetails.filter((provider) => provider.platform === "instagram")
+    : providerDetails;
   const [accounts, setAccounts] = useState<ConnectedAccountSummary[]>([]);
   const [loading, setLoading] = useState(!demoMode);
   const [error, setError] = useState("");
@@ -145,9 +179,23 @@ export function AccountsPage() {
 
   useEffect(() => {
     if (demoMode || authenticationLoading) return;
-    const callbackPlatform = removeCallbackNotification();
-    void refreshAccounts(callbackPlatform);
-  }, [authenticationLoading, demoMode, refreshAccounts]);
+    const callback = removeCallbackNotification();
+    if (callback.pending && session) {
+      setWorking(`complete:${callback.pending}`);
+      try {
+        completeOAuthNavigation(callback.pending, session);
+      } catch (reason) {
+        setWorking(null);
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "The account connection could not be completed.",
+        );
+      }
+      return;
+    }
+    void refreshAccounts(callback.connected);
+  }, [authenticationLoading, demoMode, refreshAccounts, session]);
 
   async function connect(platform: Platform) {
     setWorking(`connect:${platform}`);
@@ -159,12 +207,7 @@ export function AccountsPage() {
       return;
     }
     try {
-      const result = await apiRequest<{ authorizationUrl: string }>(
-        `/api/oauth/${platform}/start`,
-        session,
-        { method: "POST" },
-      );
-      window.location.assign(result.authorizationUrl);
+      startOAuthNavigation(platform, session);
     } catch (reason) {
       setMessage(
         reason instanceof Error
@@ -320,7 +363,7 @@ export function AccountsPage() {
         </div>
       )}
       <div className="account-grid" aria-busy={loading}>
-        {providerDetails.map((provider) => {
+        {visibleProviders.map((provider) => {
           const providerAccounts = accounts.filter(
             (account) => account.platform === provider.platform,
           );
@@ -367,7 +410,8 @@ export function AccountsPage() {
                     const connected = account.connection_status === "connected";
                     const approval = approvalStatus(account);
                     const approvalConfirmed =
-                      account.approval_state === "approved";
+                      account.approval_state === "approved" ||
+                      account.review_testing_authorized === true;
                     return (
                       <section className="connected-account" key={account.id}>
                         <h2>
@@ -402,7 +446,11 @@ export function AccountsPage() {
                               <Clock3 size={16} />
                             )}
                             <div>
-                              <small>CURRENT LAUNCH GATE</small>
+                              <small>
+                                {account.review_testing_authorized
+                                  ? "META REVIEW TEST GATE"
+                                  : "CURRENT LAUNCH GATE"}
+                              </small>
                               <strong>{approval}</strong>
                             </div>
                           </span>

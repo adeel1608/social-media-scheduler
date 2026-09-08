@@ -17,6 +17,7 @@ const checks = [
     (value) => isCredential(value) && value === env.SUPABASE_ANON_KEY,
   ],
   ["VITE_TURNSTILE_SITE_KEY", isTurnstileSiteKey],
+  ["VITE_META_REVIEW_MODE", isBoolean],
   ["VITE_DEMO_MODE", isBoolean],
   ["VITE_OPERATOR_NAME", isOperatorName],
   ["VITE_PUBLIC_CONTACT_EMAIL", isEmail],
@@ -45,6 +46,22 @@ const checks = [
     (value) => isExactCallback(value, "/api/oauth/instagram/callback"),
   ],
   ["META_APP_REVIEW_APPROVED", isBoolean],
+  ["META_REVIEW_MODE", isBoolean],
+  ...(env.META_REVIEW_MODE === "true"
+    ? [
+        [
+          "META_REVIEWER_EMAIL",
+          (value) => isEmail(value) && value === value.toLowerCase(),
+        ],
+        [
+          "META_REVIEWER_USER_ID",
+          (value) =>
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+              value,
+            ),
+        ],
+      ]
+    : []),
   ["TIKTOK_CLIENT_KEY", isPresent],
   ["TIKTOK_CLIENT_SECRET", isPresent],
   [

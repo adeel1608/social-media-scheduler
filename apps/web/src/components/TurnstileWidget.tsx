@@ -16,12 +16,17 @@ export interface TurnstileWidgetHandle {
 interface TurnstileWidgetProperties {
   siteKey: string;
   onTokenChange(token: string): void;
+  action?: "owner_login" | "meta_reviewer_login";
+  purpose?: "owner" | "reviewer";
 }
 
 export const TurnstileWidget = forwardRef<
   TurnstileWidgetHandle,
   TurnstileWidgetProperties
->(function TurnstileWidget({ siteKey, onTokenChange }, reference) {
+>(function TurnstileWidget(
+  { siteKey, onTokenChange, action = "owner_login", purpose = "owner" },
+  reference,
+) {
   const containerReference = useRef<HTMLDivElement>(null);
   const apiReference = useRef<TurnstileApi | null>(null);
   const widgetIdReference = useRef<string | null>(null);
@@ -49,7 +54,9 @@ export const TurnstileWidget = forwardRef<
     let active = true;
     if (!siteKey) {
       onTokenChange("");
-      setError("Owner login security is not configured for this installation.");
+      setError(
+        `${purpose === "reviewer" ? "Reviewer" : "Owner"} login security is not configured for this installation.`,
+      );
       return () => {
         active = false;
       };
@@ -61,7 +68,7 @@ export const TurnstileWidget = forwardRef<
         apiReference.current = api;
         widgetIdReference.current = api.render(containerReference.current, {
           sitekey: siteKey,
-          action: "owner_login",
+          action,
           callback(token) {
             if (!active) return;
             setError("");
@@ -104,7 +111,7 @@ export const TurnstileWidget = forwardRef<
       apiReference.current = null;
       widgetIdReference.current = null;
     };
-  }, [onTokenChange, siteKey]);
+  }, [action, onTokenChange, purpose, siteKey]);
 
   return (
     <div
@@ -118,8 +125,7 @@ export const TurnstileWidget = forwardRef<
       </span>
       <div ref={containerReference} className="turnstile-widget" />
       <span id={statusId} className="turnstile-status">
-        Complete the Cloudflare security challenge before requesting a sign-in
-        link.
+        Complete the Cloudflare security challenge before signing in.
       </span>
       {error && (
         <span className="turnstile-error" role="alert">

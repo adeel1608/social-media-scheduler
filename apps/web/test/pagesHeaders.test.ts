@@ -30,6 +30,10 @@ describe("Cloudflare Pages security headers", () => {
       "https://challenges.cloudflare.com",
     ]);
     expect(headers).toContain("frame-ancestors 'none'");
+    expect(directives.get("form-action")).toEqual([
+      "'self'",
+      "https://postline-api.workers.dev",
+    ]);
   });
 
   it("deduplicates a same-origin API and Supabase endpoint", () => {
@@ -45,7 +49,11 @@ describe("Cloudflare Pages security headers", () => {
       },
     });
 
-    expect(headers.match(/https:\/\/services\.example\.dev/g)).toHaveLength(1);
+    expect(
+      contentSecurityPolicyDirectives(headers)
+        .get("connect-src")
+        ?.filter((value) => value === "https://services.example.dev"),
+    ).toHaveLength(1);
   });
 });
 

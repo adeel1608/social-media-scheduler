@@ -1,3 +1,4 @@
+import { boundedFetch } from "@scheduler/shared";
 import type { Env } from "./env";
 
 export class DatabaseRequestError extends Error {
@@ -23,15 +24,21 @@ export class SupabaseRest {
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     let response: Response;
     try {
-      response = await fetch(this.url(path), {
-        ...init,
-        headers: {
-          apikey: this.apiKey,
-          Authorization: this.authorization,
-          "Content-Type": "application/json",
-          ...init.headers,
+      response = await boundedFetch(
+        fetch,
+        this.url(path),
+        {
+          ...init,
+          headers: {
+            apikey: this.apiKey,
+            Authorization: this.authorization,
+            "Content-Type": "application/json",
+            ...init.headers,
+          },
         },
-      });
+        15_000,
+        8_388_608,
+      );
     } catch {
       throw new DatabaseRequestError();
     }

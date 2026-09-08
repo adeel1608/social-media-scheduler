@@ -1,10 +1,19 @@
 # Worker API
 
-All `/api/*` routes except OAuth provider callbacks and UploadThing's signed callback request require a valid Supabase bearer session whose verified email equals `OWNER_EMAIL`. UploadThing upload initiation authenticates the same owner inside file-route middleware; the official SDK verifies callback signatures. State-changing operations are authorized again by RLS/RPC. JSON error bodies contain safe messages only.
+All `/api/*` routes except OAuth provider callbacks and UploadThing's signed
+callback request require a valid Supabase bearer session. The installation
+owner must match `OWNER_EMAIL`. A default-disabled Meta reviewer must match
+both configured email and JWT UUID and receives only the documented
+Instagram-review allowlist. UploadThing upload initiation authenticates the
+same workspace principal inside file-route middleware; the official SDK
+verifies callback signatures. Owner operations are authorized again by RLS;
+reviewer operations use service-only RPCs with explicit reviewer ownership.
+JSON error bodies contain safe messages only.
 
 | Method/path                                     | Purpose                                                                                                                                                   |
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /health`                                   | Minimal status only; 503 if production configuration is incomplete                                                                                        |
+| `GET /api/session`                              | Server-derived `owner` or `meta_reviewer` role only; never credentials                                                                                    |
 | `GET /api/setup`                                | Owner-only first-run service status                                                                                                                       |
 | `GET /api/accounts`                             | Safe connection metadata, effective current approval gates, stored connection-time approval history, and resumable disconnect-cleanup state; never tokens |
 | `DELETE /api/accounts/:id`                      | Start or resume a durable provider-revocation transaction without repeating an uncertain write                                                            |
@@ -28,3 +37,9 @@ All `/api/*` routes except OAuth provider callbacks and UploadThing's signed cal
 | `GET /api/capabilities/:platform`               | Current configured capability gates/limitations                                                                                                           |
 
 Queue messages contain only target ID, safe mode (`publish`, `upload`, `poll`) and request time. See [ARCHITECTURE.md](../ARCHITECTURE.md) for state and ambiguity behavior.
+
+The Meta reviewer allowlist contains session, storage, Instagram accounts and
+OAuth, queue/history/calendar data, Instagram-only post creation/cancellation,
+reviewer-owned media deletion, capabilities, and reviewer-scoped analytics.
+Setup/settings, TikTok, YouTube, export, installation deletion, manual retry
+and ambiguity resolution are owner-only. See [META_SETUP.md](META_SETUP.md).

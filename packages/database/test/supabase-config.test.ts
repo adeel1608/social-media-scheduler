@@ -17,10 +17,10 @@ function section(name: string): string {
 }
 
 describe("local Supabase Auth defaults", () => {
-  it("keeps direct signup and anonymous authentication disabled", () => {
+  it("keeps direct signup disabled while allowing admin-created email users", () => {
     expect(section("auth")).toMatch(/^enable_signup = false$/m);
     expect(section("auth")).toMatch(/^enable_anonymous_sign_ins = false$/m);
-    expect(section("auth.email")).toMatch(/^enable_signup = false$/m);
+    expect(section("auth.email")).toMatch(/^enable_signup = true$/m);
   });
 
   it("keeps email OTP requests at least sixty seconds apart", () => {

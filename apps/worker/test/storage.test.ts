@@ -121,7 +121,12 @@ describe("signed provider delivery", () => {
         signed.searchParams.get("expires") ?? undefined,
         signed.searchParams.get("signature") ?? undefined,
       ),
-    ).toEqual({ mediaId, ownerId });
+    ).toEqual({
+      mediaId,
+      ownerId,
+      authorizationContext: "owner",
+      authorizationGeneration: null,
+    });
     expect(
       await verifyDeliveryRequest(
         env,
@@ -285,6 +290,7 @@ describe("worker media reads and deletion", () => {
   });
 
   it("does not confirm an unsuccessful provider deletion", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(
       deleteUploadThingFile(storageEnv(), fileKey, "fileKey", {
         deleteFiles: vi
@@ -292,5 +298,9 @@ describe("worker media reads and deletion", () => {
           .mockResolvedValue({ success: false, deletedCount: 0 }),
       }),
     ).rejects.toMatchObject({ code: "provider_delete_failed" });
+    expect(errorLog).toHaveBeenCalledWith(
+      '{"level":"error","message":"uploadthing_delete_failed","state":"delete_file","classification":"provider_rejected"}',
+    );
+    errorLog.mockRestore();
   });
 });

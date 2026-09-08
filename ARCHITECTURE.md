@@ -1,6 +1,8 @@
 # Architecture
 
-Postline is a TypeScript/pnpm monorepo for a single-owner installation.
+Postline is a TypeScript/pnpm monorepo for a single-owner installation. A
+temporary, default-disabled Meta reviewer workspace is a deliberately narrow
+exception for App Review; it is not a second owner or public multi-tenancy.
 
 ## Components
 
@@ -15,9 +17,26 @@ Postline is a TypeScript/pnpm monorepo for a single-owner installation.
 
 ## Request and trust boundaries
 
-The browser receives only the Supabase public/anon key. It authenticates by magic link and sends the short-lived user JWT to the Worker. The Worker validates that JWT with Supabase Auth, compares its email to `OWNER_EMAIL`, and owner-scoped PostgREST requests are evaluated again by RLS. Service-role credentials, the UploadThing token, platform client secrets, delivery-signing keys, refresh tokens, and Resend keys exist only in Worker secrets.
+The browser receives only the Supabase public/anon key. The owner authenticates
+by magic link and sends the short-lived user JWT to the Worker. The Worker
+validates that JWT with Supabase Auth, compares its email to `OWNER_EMAIL`, and
+owner-scoped PostgREST requests are evaluated again by RLS. When explicitly
+enabled, a manually pre-created Meta reviewer authenticates with Supabase
+email/password plus CAPTCHA. The Worker requires the exact configured email
+and JWT UUID, applies a default-deny route allowlist, and performs only
+reviewer-UUID-scoped service calls. Existing owner RLS remains unchanged, so a
+reviewer JWT has no direct operational-table access. Service-role credentials,
+the UploadThing token, platform client secrets, delivery-signing keys, refresh
+tokens, and Resend keys exist only in Worker secrets.
 
 Connected-account tokens are encrypted with Web Crypto AES-256-GCM. The ciphertext and 96-bit nonce use separate columns, with algorithm/key-version metadata to support rotation. OAuth state records store a SHA-256 state hash, expire within 10 minutes, are single-use, and store PKCE verifier ciphertext separately.
+
+Reviewer OAuth state, accounts and targets carry a durable `meta_review`
+authorization context. Queue processing rechecks the current review-mode flag,
+configured reviewer UUID, Instagram platform, account owner/context, post
+owner and every media owner before token decryption. Owner targets never
+inherit this exception, and reviewer failures never enter the owner's
+notification stream.
 
 ## Scheduling and publication
 

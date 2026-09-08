@@ -22,9 +22,12 @@ local-development, database-testing, and RLS documentation on 2026-09-05.
    CI runs the same disposable-stack verification. The production deployment
    workflow also makes a zero-row, non-mutating service-role call to
    `claim_stale_targets`, a zero-row notification-schema query, and the
-   `verify_phase_2b_schema` preflight for durable disconnect recovery; it stops
-   before Worker deployment if any required migration is missing or
-   inaccessible.
+   `verify_phase_2b_schema` preflight for durable disconnect recovery, and the
+   `verify_meta_review_schema` preflight for the temporary isolated reviewer
+   workspace, including generation-isolated analytics; it stops before Worker
+   deployment if any required migration is missing or inaccessible. Apply the
+   database migrations before the Worker so the old Worker fails closed on
+   reviewer analytics and the new Worker never runs against an older schema.
 
 4. Authentication > URL Configuration: set Site URL to the exact HTTPS web
    origin and add `https://YOUR_WEB_HOST/dashboard` plus the local callback used
@@ -61,9 +64,22 @@ values ('OWNER_AUTH_USER_UUID', lower('OWNER_EMAIL'));
     Supabase Dashboard → Settings → Authentication → Bot and Abuse Protection,
     enable CAPTCHA protection, select Cloudflare Turnstile, and paste the
     Turnstile secret key. Put only the public Site Key in the production GitHub
-    environment variable `VITE_TURNSTILE_SITE_KEY`. The login sends the returned
-    browser token to `signInWithOtp`; the Turnstile secret belongs only in
-    Supabase and must never be a `VITE_` value.
+    environment variable `VITE_TURNSTILE_SITE_KEY`. Owner login sends the
+    returned browser token to `signInWithOtp`; the temporary reviewer password
+    flow sends it to `signInWithPassword`. The Turnstile secret belongs only
+    in Supabase and must never be a `VITE_` value.
+
+## Temporary Meta reviewer Auth user
+
+Do not create this user during normal installation. Immediately before a Meta
+App Review window, follow [META_SETUP.md](META_SETUP.md): keep public signup
+disabled, manually create one password user in Supabase Dashboard, set a
+unique strong temporary password only in Supabase Auth, and copy its lower-case
+email plus Auth UUID into the Worker's hidden reviewer identity bindings. Do
+not insert this user into `installation_settings`; that table remains reserved
+for the one owner. The reviewer JWT therefore has no direct owner RLS access,
+and password sign-in remains unavailable in Postline unless both the Pages
+visibility flag and authoritative Worker gate are enabled.
 
 Worker failed-post notification is separate from Supabase Auth SMTP and uses
 Resend. Configuring one does not configure the other.

@@ -1,5 +1,6 @@
 export * from "./analytics";
 export * from "./auth";
+export * from "./bounded-fetch";
 export * from "./crypto";
 export * from "./media";
 export * from "./oauth";

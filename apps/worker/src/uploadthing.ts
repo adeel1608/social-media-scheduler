@@ -8,11 +8,20 @@ import {
 
 import { createMediaUploadSchema, validateMedia } from "@scheduler/shared";
 
-import { authenticateOwnerRequest } from "./auth";
+import {
+  authenticateWorkspaceRequest,
+  type WorkspaceAuthentication,
+} from "./auth";
 import { ownerDatabase, SupabaseRest } from "./database";
 import type { Env } from "./env";
+import { logWorkerError } from "./logging";
+import {
+  ReviewerDatabase,
+  requireReviewerAuthorization,
+} from "./review-authorization";
 import {
   ACTIVE_MEDIA_LIMIT_BYTES,
+  REVIEWER_MEDIA_LIMIT_BYTES,
   deleteUploadThingFile,
   validateUploadThingUrl,
 } from "./storage";
@@ -47,9 +56,16 @@ export interface UploadThingRouteDependencies {
   authenticate(
     env: Env,
     request: Request,
-  ): ReturnType<typeof authenticateOwnerRequest>;
-  consumeRateLimit(env: Env, jwt: string): Promise<boolean>;
-  reserve(env: Env, jwt: string, input: UploadInput): Promise<string>;
+  ): ReturnType<typeof authenticateWorkspaceRequest>;
+  consumeRateLimit(
+    env: Env,
+    authentication: Extract<WorkspaceAuthentication, { authenticated: true }>,
+  ): Promise<boolean>;
+  reserve(
+    env: Env,
+    authentication: Extract<WorkspaceAuthentication, { authenticated: true }>,
+    input: UploadInput,
+  ): Promise<string>;
   finalize(
     env: Env,
     input: {
@@ -60,30 +76,68 @@ export interface UploadThingRouteDependencies {
       sizeBytes: number;
       mimeType: string;
       checksum: string;
+      authorizationContext?: "owner" | "meta_review";
+      authorizationGeneration?: string;
     },
   ): Promise<string>;
   deleteFile(env: Env, fileKey: string): Promise<unknown>;
 }
 
 const defaultDependencies: UploadThingRouteDependencies = {
-  authenticate: authenticateOwnerRequest,
-  consumeRateLimit: (env, jwt) =>
-    ownerDatabase(env, jwt).rpc<boolean>("consume_rate_limit", {
-      p_route: "upload_start",
-      p_limit: 30,
-      p_window_seconds: 60,
-    }),
-  async reserve(env, jwt, input) {
-    return ownerDatabase(env, jwt).rpc<string>("reserve_uploadthing_media", {
+  authenticate: authenticateWorkspaceRequest,
+  consumeRateLimit: (env, authentication) =>
+    authentication.accessRole === "owner"
+      ? ownerDatabase(env, authentication.jwt).rpc<boolean>(
+          "consume_rate_limit",
+          {
+            p_route: "upload_start",
+            p_limit: 30,
+            p_window_seconds: 60,
+          },
+        )
+      : new ReviewerDatabase(
+          env,
+          authentication.user.id,
+          authentication.reviewGeneration!,
+        ).rpc<boolean>("consume_meta_review_rate_limit", {
+          p_reviewer_id: authentication.user.id,
+          p_route: "upload_start",
+          p_limit: 30,
+          p_window_seconds: 60,
+        }),
+  async reserve(env, authentication, input) {
+    const parameters = {
       p_original_filename: input.filename,
       p_mime_type: input.mimeType,
       p_size_bytes: input.sizeBytes,
       p_width: input.width ?? null,
       p_height: input.height ?? null,
       p_duration_seconds: input.durationSeconds ?? null,
-    });
+    };
+    return authentication.accessRole === "owner"
+      ? ownerDatabase(env, authentication.jwt).rpc<string>(
+          "reserve_uploadthing_media",
+          parameters,
+        )
+      : new ReviewerDatabase(
+          env,
+          authentication.user.id,
+          authentication.reviewGeneration!,
+        ).rpc<string>("reserve_meta_review_media", {
+          p_reviewer_id: authentication.user.id,
+          ...parameters,
+        });
   },
   async finalize(env, input) {
+    if (input.authorizationContext === "meta_review") {
+      if (!input.authorizationGeneration)
+        throw new Error("Upload authorization unavailable.");
+      await requireReviewerAuthorization(
+        env,
+        input.ownerId,
+        input.authorizationGeneration,
+      );
+    }
     return new SupabaseRest(env).rpc<string>("complete_uploadthing_media", {
       p_media_id: input.mediaId,
       p_owner_id: input.ownerId,
@@ -108,7 +162,7 @@ export async function authorizeUploadInitiation(
   if (!authentication.authenticated) {
     throw new UploadThingError({
       code: "FORBIDDEN",
-      message: "Owner authentication is required to upload media.",
+      message: "Workspace authentication is required to upload media.",
     });
   }
   if (files.length !== 1) {
@@ -141,13 +195,18 @@ export async function authorizeUploadInitiation(
       message: issues.map((issue) => issue.message).join(" "),
     });
   }
-  if (input.sizeBytes > ACTIVE_MEDIA_LIMIT_BYTES) {
+  if (
+    input.sizeBytes >
+    (authentication.accessRole === "meta_reviewer"
+      ? REVIEWER_MEDIA_LIMIT_BYTES
+      : ACTIVE_MEDIA_LIMIT_BYTES)
+  ) {
     throw new UploadThingError({
       code: "TOO_LARGE",
-      message: "This file exceeds Postline's 1.8 GiB active-media safety cap.",
+      message: "This file exceeds the workspace media allocation.",
     });
   }
-  const allowed = await dependencies.consumeRateLimit(env, authentication.jwt);
+  const allowed = await dependencies.consumeRateLimit(env, authentication);
   if (!allowed) {
     throw new UploadThingError({
       code: "TOO_MANY_FILES",
@@ -156,7 +215,7 @@ export async function authorizeUploadInitiation(
   }
   let mediaId: string;
   try {
-    mediaId = await dependencies.reserve(env, authentication.jwt, input);
+    mediaId = await dependencies.reserve(env, authentication, input);
   } catch (error) {
     const safeBody =
       typeof error === "object" && error && "body" in error
@@ -166,7 +225,7 @@ export async function authorizeUploadInitiation(
       throw new UploadThingError({
         code: "FILE_LIMIT_EXCEEDED",
         message:
-          "Upload rejected: active and reserved media would exceed Postline's 1.8 GiB limit. Delete unused media or wait for eligible cleanup.",
+          "Upload rejected: the media allocation would be exceeded. Delete unused media or wait for eligible cleanup.",
       });
     }
     throw new UploadThingError({
@@ -176,6 +235,13 @@ export async function authorizeUploadInitiation(
   }
   return {
     ownerId: authentication.user.id,
+    authorizationContext:
+      authentication.accessRole === "meta_reviewer"
+        ? ("meta_review" as const)
+        : ("owner" as const),
+    ...(authentication.reviewGeneration
+      ? { authorizationGeneration: authentication.reviewGeneration }
+      : {}),
     mediaId,
     [UTFiles]: [{ ...file, customId: mediaId }],
   };
@@ -183,7 +249,12 @@ export async function authorizeUploadInitiation(
 
 export async function completeUploadThingCallback(
   env: Env,
-  metadata: { ownerId: string; mediaId: string },
+  metadata: {
+    ownerId: string;
+    mediaId: string;
+    authorizationContext?: "owner" | "meta_review";
+    authorizationGeneration?: string;
+  },
   file: UploadedFile,
   dependencies: UploadThingRouteDependencies = defaultDependencies,
 ) {
@@ -199,6 +270,12 @@ export async function completeUploadThingCallback(
     sizeBytes: file.size,
     mimeType: file.type || "application/octet-stream",
     checksum: file.fileHash,
+    ...(metadata.authorizationContext
+      ? { authorizationContext: metadata.authorizationContext }
+      : {}),
+    ...(metadata.authorizationGeneration
+      ? { authorizationGeneration: metadata.authorizationGeneration }
+      : {}),
   });
   if (result === "completed" || result === "already_complete") {
     return {
@@ -223,7 +300,7 @@ export function createUploadThingRouter(
 ) {
   const upload = createUploadthing({
     errorFormatter(error) {
-      return { code: error.code, message: error.message };
+      return { code: error.code, message: "Upload could not be completed." };
     },
   });
   return {
@@ -247,16 +324,52 @@ export function createUploadThingRouter(
 
 export type UploadThingRouter = ReturnType<typeof createUploadThingRouter>;
 
-export function handleUploadThingRequest(env: Env, request: Request) {
-  const callbackUrl = new URL("/api/uploadthing", env.WORKER_PUBLIC_URL);
-  return createRouteHandler({
-    router: createUploadThingRouter(env),
-    config: {
-      token: env.UPLOADTHING_TOKEN,
-      callbackUrl: callbackUrl.toString(),
-      isDev: env.ENVIRONMENT !== "production",
-      handleDaemonPromise: env.ENVIRONMENT === "production" ? "await" : "void",
-      logLevel: env.ENVIRONMENT === "production" ? "Error" : "Warning",
+function uploadFailureClassification(status: number): string {
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "provider_failure";
+  return "request_rejected";
+}
+
+function sanitizedUploadThingErrorResponse(status: number): Response {
+  return Response.json(
+    {
+      code: "UPLOAD_FAILED",
+      message: "Upload could not be completed.",
     },
-  })(request);
+    { status },
+  );
+}
+
+export async function handleUploadThingRequest(
+  env: Env,
+  request: Request,
+): Promise<Response> {
+  const callbackUrl = new URL("/api/uploadthing", env.WORKER_PUBLIC_URL);
+  try {
+    const response = await createRouteHandler({
+      router: createUploadThingRouter(env),
+      config: {
+        token: env.UPLOADTHING_TOKEN,
+        callbackUrl: callbackUrl.toString(),
+        isDev: env.ENVIRONMENT !== "production",
+        handleDaemonPromise:
+          env.ENVIRONMENT === "production" ? "await" : "void",
+        logLevel: "None",
+      },
+    })(request);
+    if (!response.ok) {
+      logWorkerError("uploadthing_route_failed", {
+        state: "upload_route",
+        classification: uploadFailureClassification(response.status),
+      });
+      return sanitizedUploadThingErrorResponse(response.status);
+    }
+    return response;
+  } catch {
+    logWorkerError("uploadthing_route_failed", {
+      state: "upload_route",
+      classification: "provider_failure",
+    });
+    return sanitizedUploadThingErrorResponse(500);
+  }
 }

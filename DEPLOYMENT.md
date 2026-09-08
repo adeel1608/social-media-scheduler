@@ -35,6 +35,26 @@ corepack pnpm supabase migration list
 
 Create the owner user and installation row as described in [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md). Never use the service-role key in the browser. Migration `202609030003_uploadthing_storage.sql` adds UploadThing metadata plus atomic reservation, completion, and usage RPCs. It preserves legacy storage rows for forward compatibility; the current application does not fetch or delete those legacy objects.
 
+Migration `202609060001_meta_review_access.sql` adds only the durable context,
+indexes and service-only RPCs required for the temporary Meta reviewer
+workspace. Apply it before deploying code that uses reviewer access. The
+deployment preflight calls the stable, non-mutating
+`verify_meta_review_schema()` function and stops before Worker deployment when
+the migration is missing or inaccessible. See
+[docs/META_SETUP.md](docs/META_SETUP.md) before enabling the default-false
+gate.
+
+Migrations `202609070007_authenticated_oauth_completion.sql` and
+`202609070008_media_least_privilege.sql` are an ordered security boundary and
+must be applied before the Worker and web changes that consume them. The first
+escrows provider callback codes for an exact authenticated-session completion;
+the second removes authenticated direct media mutations while preserving
+owner-only reads and the narrow quota/completion RPCs. The updated stable
+`verify_meta_review_schema()` preflight proves both boundaries and makes a new
+Worker/old-schema deployment stop without mutation. Applying the migrations
+before the Worker also fails safely: the legacy callback-consumption RPC is
+revoked before any old Worker can exchange a newly returned provider code.
+
 ## UploadThing
 
 Complete [docs/UPLOADTHING_SETUP.md](docs/UPLOADTHING_SETUP.md). Enter the v7 token directly into Wrangler's hidden prompt:
@@ -49,6 +69,13 @@ screenshot, commit, issue, or build log. Set `WORKER_PUBLIC_URL` to the final
 Worker HTTPS origin so UploadThing can reach `/api/uploadthing` callbacks.
 
 ## Cloudflare Worker resources and secrets
+
+Keep `[observability.logs].invocation_logs=false` and
+`[observability.traces].enabled=false`. Sanitized application events remain
+enabled; automatic request/URL events do not. `redact_query_string=true` is
+retained as defense in depth. Do not enable raw request logging to debug OAuth
+or signed media delivery. Validate configuration using the pinned Wrangler
+dry-run; no production-log inspection is required.
 
 Inspect resources before creating anything. R2 is neither needed nor authorized:
 
@@ -118,6 +145,7 @@ Set only these public build-time values in the web hosting project:
 - `VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co`
 - `VITE_SUPABASE_ANON_KEY=...` (public anon key only)
 - `VITE_TURNSTILE_SITE_KEY=...` (public Turnstile Site Key only)
+- `VITE_META_REVIEW_MODE=false` (public form visibility only; not authority)
 - `VITE_DEMO_MODE=false`
 - `VITE_OPERATOR_NAME=YOUR_PUBLIC_OPERATOR_NAME`
 - `VITE_PUBLIC_CONTACT_EMAIL=YOUR_PUBLIC_CONTACT_EMAIL`
@@ -174,7 +202,7 @@ Do not enable `LIVE_TEST_CONFIRM` merely to make `/health` green. No social publ
 operator to type `DEPLOY`, and uses the protected `production` environment. Set
 the non-secret `CLOUDFLARE_PAGES_PROJECT`, `CLOUDFLARE_WORKER_NAME`, `APP_URL`,
 `API_URL`, `SUPABASE_URL`, `OPERATOR_NAME`, `PUBLIC_CONTACT_EMAIL`, and
-`VITE_TURNSTILE_SITE_KEY`
+`VITE_TURNSTILE_SITE_KEY` and `META_REVIEW_MODE`
 repository/environment variables.
 Set only the Cloudflare deployment credentials and browser-safe Supabase anon
 key in the workflow's secret store. The preflight rejects missing, malformed,

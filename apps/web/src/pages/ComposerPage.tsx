@@ -40,6 +40,7 @@ interface ConnectedAccount {
   platform: Platform;
   connection_status: string;
   approval_state: string;
+  review_testing_authorized?: boolean;
 }
 
 interface ComposerFields {
@@ -83,14 +84,17 @@ const tomorrowInMelbourne = new Date(
 ).toLocaleDateString("en-CA", { timeZone: "Australia/Melbourne" });
 
 export function ComposerPage() {
-  const { demoMode, session } = useAuth();
+  const { demoMode, session, accessRole } = useAuth();
+  const reviewer = accessRole === "meta_reviewer";
+  const availablePlatforms = reviewer
+    ? (["instagram"] as const)
+    : platformOptions;
   const initialCaption =
     "A quiet reset for the days when the ideas feel far away. Save this for later ✦";
   const initialTitle = "Three ways to reset your creative energy";
-  const [selected, setSelected] = useState<Platform[]>([
-    "instagram",
-    "youtube",
-  ]);
+  const [selected, setSelected] = useState<Platform[]>(
+    reviewer ? ["instagram"] : ["instagram", "youtube"],
+  );
   const [tab, setTab] = useState<Platform>("instagram");
   const [caption, setCaption] = useState(initialCaption);
   const [title, setTitle] = useState(initialTitle);
@@ -297,6 +301,9 @@ export function ComposerPage() {
         candidate.connection_status === "connected",
     );
     if (!account) return "Not connected · target will be blocked";
+    if (reviewer && account.review_testing_authorized) {
+      return "Connected · temporary Meta review testing enabled";
+    }
     return account.approval_state === "pending"
       ? "Connected · approval pending"
       : "Connected";
@@ -416,7 +423,7 @@ export function ComposerPage() {
           Each platform publishes and reports independently.
         </Step>
         <div className="platform-selectors">
-          {platformOptions.map((platform) => (
+          {availablePlatforms.map((platform) => (
             <button
               key={platform}
               className={`platform-choice ${selected.includes(platform) ? "selected" : ""}`}

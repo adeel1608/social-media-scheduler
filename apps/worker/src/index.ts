@@ -6,7 +6,7 @@ import {
   securityHeaders,
   type PlatformMetadata,
 } from "@scheduler/shared";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 
 import { syncAnalyticsBatch } from "./analytics";
@@ -20,15 +20,20 @@ import {
 } from "./account-revocation";
 import { adapterFor } from "./adapters";
 import type { Variables } from "./auth";
-import { ownerAuth } from "./auth";
+import { reviewerRouteAllowed, workspaceAuth } from "./auth";
 import {
   configurationStatus,
   assertProductionConfigured,
   ownerSetupStatus,
+  metaReviewerConfiguration,
   type Env,
   type QueueJob,
 } from "./env";
 import { ownerDatabase, SupabaseRest } from "./database";
+import {
+  ReviewerDatabase,
+  requireReviewerAuthorization,
+} from "./review-authorization";
 import oauthRoutes from "./oauth-routes";
 import { logWorkerError } from "./logging";
 import { retryFailedNotifications } from "./notifications";
@@ -47,6 +52,13 @@ import {
 import { handleUploadThingRequest } from "./uploadthing";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
+function serviceDatabase(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+): SupabaseRest {
+  return c.get("accessRole") === "meta_reviewer"
+    ? new ReviewerDatabase(c.env, c.get("user").id, c.get("reviewGeneration")!)
+    : new SupabaseRest(c.env);
+}
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -139,10 +151,26 @@ app.on(["GET", "HEAD"], "/delivery/:encodedKey", async (c) => {
   );
   if (!reference) return c.body(null, 403);
   const rows = await new SupabaseRest(c.env).select<StoredMedia[]>(
-    `media_assets?id=eq.${encodeURIComponent(reference.mediaId)}&owner_id=eq.${encodeURIComponent(reference.ownerId)}&storage_provider=eq.uploadthing&upload_status=eq.complete&deleted_at=is.null&select=id,owner_id,storage_provider,provider_file_key,provider_url,object_key,mime_type,size_bytes,upload_status,deleted_at&limit=1`,
+    `media_assets?id=eq.${encodeURIComponent(reference.mediaId)}&owner_id=eq.${encodeURIComponent(reference.ownerId)}&authorization_context=eq.${reference.authorizationContext ?? "owner"}&storage_provider=eq.uploadthing&upload_status=eq.complete&deleted_at=is.null&select=id,owner_id,storage_provider,provider_file_key,provider_url,object_key,mime_type,size_bytes,upload_status,deleted_at,authorization_context,authorization_generation&limit=1`,
   );
   const media = rows[0];
   if (!media) return c.body(null, 404);
+  if (reference.authorizationContext === "meta_review") {
+    if (
+      !reference.authorizationGeneration ||
+      media.authorization_generation !== reference.authorizationGeneration
+    )
+      return c.body(null, 403);
+    try {
+      await requireReviewerAuthorization(
+        c.env,
+        reference.ownerId,
+        reference.authorizationGeneration,
+      );
+    } catch {
+      return c.body(null, 403);
+    }
+  }
   try {
     return await deliveryResponse(
       c.env,
@@ -161,18 +189,44 @@ app.route("/api/oauth", oauthRoutes);
 app.on(["GET", "POST"], "/api/uploadthing", (c) =>
   handleUploadThingRequest(c.env, c.req.raw),
 );
-app.use("/api/*", ownerAuth);
+app.use("/api/*", workspaceAuth);
+app.use("/api/*", async (c, next) => {
+  if (
+    c.get("accessRole") === "meta_reviewer" &&
+    !reviewerRouteAllowed(c.req.method, c.req.path)
+  ) {
+    return c.json({ error: "reviewer_route_not_allowed" }, 403);
+  }
+  await next();
+});
+
+app.get("/api/session", (c) =>
+  c.json({
+    role: c.get("accessRole"),
+    metaReview: c.get("accessRole") === "meta_reviewer",
+  }),
+);
 
 app.get("/api/setup", (c) => c.json(ownerSetupStatus(c.env)));
 
 app.get("/api/storage", async (c) => {
-  const rows = await ownerDatabase(c.env, c.get("jwt")).rpc<
-    Array<{
-      active_bytes: number;
-      reserved_bytes: number;
-      limit_bytes: number;
-    }>
-  >("uploadthing_storage_usage", {});
+  const rows = await (c.get("accessRole") === "owner"
+    ? ownerDatabase(c.env, c.get("jwt")).rpc<
+        Array<{
+          active_bytes: number;
+          reserved_bytes: number;
+          limit_bytes: number;
+        }>
+      >("uploadthing_storage_usage", {})
+    : serviceDatabase(c).rpc<
+        Array<{
+          active_bytes: number;
+          reserved_bytes: number;
+          limit_bytes: number;
+        }>
+      >("meta_review_storage_usage", {
+        p_reviewer_id: c.get("user").id,
+      }));
   const usage = rows[0] ?? {
     active_bytes: 0,
     reserved_bytes: 0,
@@ -187,10 +241,14 @@ app.get("/api/storage", async (c) => {
 });
 
 app.get("/api/accounts", async (c) => {
-  const db = ownerDatabase(c.env, c.get("jwt"));
+  const reviewer = c.get("accessRole") === "meta_reviewer";
+  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
+  const reviewerFilters = reviewer
+    ? "&platform=eq.instagram&authorization_context=eq.meta_review"
+    : "";
   const [rows, transactions] = await Promise.all([
     db.select<Array<Record<string, unknown>>>(
-      `connected_accounts?owner_id=eq.${c.get("user").id}&select=id,platform,username,connection_status,approval_state,metadata&order=platform`,
+      `connected_accounts?owner_id=eq.${c.get("user").id}${reviewerFilters}&select=id,platform,username,connection_status,approval_state,metadata&order=platform`,
     ),
     db.select<DisconnectTransaction[]>(
       `account_disconnect_transactions?owner_id=eq.${c.get("user").id}&state=neq.completed&select=account_id,operation_id,state,expires_at`,
@@ -201,29 +259,36 @@ app.get("/api/accounts", async (c) => {
   );
   return c.json({
     data: rows
-      .map((row) =>
-        sanitizeConnectedAccount(
+      .map((row) => {
+        const account = sanitizeConnectedAccount(
           {
             ...row,
             disconnect_cleanup: cleanupByAccount.get(String(row.id)),
           },
           c.env,
-        ),
-      )
+        );
+        return account && reviewer && account.platform === "instagram"
+          ? { ...account, review_testing_authorized: true }
+          : account;
+      })
       .filter((row) => row !== null),
   });
 });
 
 app.delete("/api/accounts/:id", async (c) => {
-  const db = ownerDatabase(c.env, c.get("jwt"));
+  const reviewer = c.get("accessRole") === "meta_reviewer";
+  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
+  const reviewerFilters = reviewer
+    ? "&platform=eq.instagram&authorization_context=eq.meta_review"
+    : "";
   const rows = await db.select<RevocableAccount[]>(
-    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&select=platform,encrypted_access_token,access_token_nonce,encryption_key_version&limit=1`,
+    `connected_accounts?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}${reviewerFilters}&select=owner_id,platform,authorization_context,authorization_generation,encrypted_access_token,access_token_nonce,encryption_key_version&limit=1`,
   );
   const account = rows[0];
   if (!account) return c.json({ error: "account_not_found" }, 404);
   const result = await disconnectAccountDurably(
     c.env,
-    new SupabaseRest(c.env),
+    serviceDatabase(c),
     c.req.param("id"),
     c.get("user").id,
     account,
@@ -263,9 +328,19 @@ app.post("/api/accounts/:id/disconnect/confirm", async (c) => {
   ) {
     return c.json({ error: "invalid_disconnect_confirmation" }, 400);
   }
-  const rows = await ownerDatabase(c.env, c.get("jwt")).select<
-    DisconnectTransaction[]
-  >(
+  const confirmationDb =
+    c.get("accessRole") === "meta_reviewer"
+      ? serviceDatabase(c)
+      : ownerDatabase(c.env, c.get("jwt"));
+  if (c.get("accessRole") === "meta_reviewer") {
+    const allowedAccount = await confirmationDb.select<Array<{ id: string }>>(
+      `connected_accounts?id=eq.${encodeURIComponent(accountId)}&owner_id=eq.${ownerId}&platform=eq.instagram&authorization_context=eq.meta_review&select=id&limit=1`,
+    );
+    if (!allowedAccount.length) {
+      return c.json({ error: "disconnect_cleanup_not_found" }, 404);
+    }
+  }
+  const rows = await confirmationDb.select<DisconnectTransaction[]>(
     `account_disconnect_transactions?account_id=eq.${encodeURIComponent(accountId)}&owner_id=eq.${ownerId}&operation_id=eq.${encodeURIComponent(input.operationId)}&select=account_id,operation_id,state,expires_at,provider_outcome&limit=1`,
   );
   const transaction = rows[0];
@@ -281,7 +356,7 @@ app.post("/api/accounts/:id/disconnect/confirm", async (c) => {
   if (new Date(transaction.expires_at).getTime() <= Date.now())
     return c.json({ error: "disconnect_cleanup_expired" }, 410);
   const completed = await confirmDurableAccountDisconnect(
-    new SupabaseRest(c.env),
+    serviceDatabase(c),
     accountId,
     ownerId,
     input.operationId,
@@ -302,6 +377,13 @@ app.get("/api/queue", async (c) => {
       400,
     );
   const { limit, cursor, status, platform } = parsed.data;
+  if (
+    c.get("accessRole") === "meta_reviewer" &&
+    platform &&
+    platform !== "instagram"
+  ) {
+    return c.json({ error: "reviewer_platform_not_allowed" }, 403);
+  }
   const view = c.req.query("view") ?? "queue";
   if (!["queue", "published", "failed", "all"].includes(view))
     return c.json({ error: "invalid_queue_view" }, 400);
@@ -320,7 +402,16 @@ app.get("/api/queue", async (c) => {
     platform ? `platform=eq.${platform}` : "",
     cursor ? `id=lt.${encodeURIComponent(cursor)}` : "",
   ].filter(Boolean);
-  const db = ownerDatabase(c.env, c.get("jwt"));
+  const db =
+    c.get("accessRole") === "meta_reviewer"
+      ? serviceDatabase(c)
+      : ownerDatabase(c.env, c.get("jwt"));
+  if (c.get("accessRole") === "meta_reviewer") {
+    filters.push(
+      "platform=eq.instagram",
+      "authorization_context=eq.meta_review",
+    );
+  }
   const rows = (await db.select(
     `post_targets?${filters.join("&")}&select=id,post_id,platform,status,scheduled_at_utc,remote_url,last_error_message,posts(title,base_caption,post_media(media_assets(id)))&order=id.desc&limit=${limit + 1}`,
   )) as Array<Record<string, unknown>>;
@@ -334,11 +425,13 @@ app.get("/api/queue", async (c) => {
 });
 
 app.get("/api/analytics", async (c) => {
-  const db = ownerDatabase(c.env, c.get("jwt"));
+  const reviewer = c.get("accessRole") === "meta_reviewer";
   const requestedPlatform = c.req.query("platform");
   const platform = platformSchema.safeParse(requestedPlatform);
   if (requestedPlatform && !platform.success)
     return c.json({ error: "invalid_platform" }, 400);
+  if (reviewer && platform.success && platform.data !== "instagram")
+    return c.json({ error: "reviewer_platform_not_allowed" }, 403);
   const from = c.req.query("from");
   const to = c.req.query("to");
   if (
@@ -346,6 +439,18 @@ app.get("/api/analytics", async (c) => {
     (to && !/^\d{4}-\d{2}-\d{2}$/.test(to))
   )
     return c.json({ error: "invalid_date_range" }, 400);
+  if (reviewer) {
+    const data = await serviceDatabase(c).rpc("list_meta_review_analytics", {
+      p_reviewer_id: c.get("user").id,
+      p_generation: c.get("reviewGeneration"),
+      p_target_id: null,
+      p_from: from ? `${from}T00:00:00Z` : null,
+      p_to: to ? `${to}T23:59:59Z` : null,
+      p_limit: 500,
+    });
+    return c.json({ data });
+  }
+  const db = ownerDatabase(c.env, c.get("jwt"));
   const filters = [
     `owner_id=eq.${c.get("user").id}`,
     platform.success ? `platform=eq.${platform.data}` : "",
@@ -362,6 +467,18 @@ app.get("/api/analytics/:targetId", async (c) => {
   const targetId = c.req.param("targetId");
   if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(targetId))
     return c.json({ error: "invalid_target_id" }, 400);
+  const reviewer = c.get("accessRole") === "meta_reviewer";
+  if (reviewer) {
+    const data = await serviceDatabase(c).rpc("list_meta_review_analytics", {
+      p_reviewer_id: c.get("user").id,
+      p_generation: c.get("reviewGeneration"),
+      p_target_id: targetId,
+      p_from: null,
+      p_to: null,
+      p_limit: 500,
+    });
+    return c.json({ data });
+  }
   const db = ownerDatabase(c.env, c.get("jwt"));
   const data = await db.select(
     `analytics_snapshots?owner_id=eq.${c.get("user").id}&post_target_id=eq.${encodeURIComponent(targetId)}&select=id,post_target_id,platform,captured_at,period_start,period_end,normalized_metrics,raw_metrics,unavailable_metrics,post_targets(metadata,remote_url,posts(title))&order=captured_at.desc&limit=500`,
@@ -430,7 +547,7 @@ app.post("/api/installation/delete", async (c) => {
       },
       409,
     );
-  const serviceDb = new SupabaseRest(c.env);
+  const serviceDb = serviceDatabase(c);
   const accounts = await serviceDb.select<RevocableAccount[]>(
     `connected_accounts?owner_id=eq.${ownerId}&select=platform,encrypted_access_token,access_token_nonce,encryption_key_version`,
   );
@@ -521,7 +638,16 @@ app.post("/api/posts", async (c) => {
       },
       400,
     );
-  const db = ownerDatabase(c.env, c.get("jwt"));
+  const reviewer = c.get("accessRole") === "meta_reviewer";
+  if (
+    reviewer &&
+    (parsed.data.targets.length !== 1 ||
+      parsed.data.targets[0]?.platform !== "instagram" ||
+      !parsed.data.targets[0].connectedAccountId)
+  ) {
+    return c.json({ error: "reviewer_instagram_target_required" }, 403);
+  }
+  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
   const mediaRows = await db.select<
     Array<{
       id: string;
@@ -542,7 +668,7 @@ app.post("/api/posts", async (c) => {
     return c.json(
       {
         error: "invalid_media_selection",
-        message: "Every selected media item must be uploaded by the owner.",
+        message: "Every selected media item must belong to this workspace.",
       },
       400,
     );
@@ -566,10 +692,9 @@ app.post("/api/posts", async (c) => {
   const validation = parsed.data.targets.flatMap((target) => {
     const selected = new Set(target.mediaIds ?? parsed.data.mediaIds);
     const targetMedia = media.filter((item) => selected.has(item.id));
-    const result = adapterFor(target.platform, c.env).validatePost(
-      target.metadata as PlatformMetadata,
-      targetMedia,
-    );
+    const result = adapterFor(target.platform, c.env, {
+      metaReviewTestingAuthorized: reviewer,
+    }).validatePost(target.metadata as PlatformMetadata, targetMedia);
     return result.errors.map((issue) => ({
       platform: target.platform,
       ...issue,
@@ -584,20 +709,36 @@ app.post("/api/posts", async (c) => {
       },
       400,
     );
-  const id = await db.rpc<string>("create_scheduled_post", {
-    p_title: parsed.data.title,
-    p_base_caption: parsed.data.baseCaption,
-    p_scheduled_at_utc: scheduled.utc,
-    p_media_ids: parsed.data.mediaIds,
-    p_targets: parsed.data.targets,
-  });
+  const id = reviewer
+    ? await db.rpc<string>("create_meta_review_post", {
+        p_reviewer_id: c.get("user").id,
+        p_title: parsed.data.title,
+        p_base_caption: parsed.data.baseCaption,
+        p_scheduled_at_utc: scheduled.utc,
+        p_media_ids: parsed.data.mediaIds,
+        p_connected_account_id: parsed.data.targets[0]!.connectedAccountId!,
+        p_selected_media_ids:
+          parsed.data.targets[0]!.mediaIds ?? parsed.data.mediaIds,
+        p_metadata: parsed.data.targets[0]!.metadata,
+      })
+    : await db.rpc<string>("create_scheduled_post", {
+        p_title: parsed.data.title,
+        p_base_caption: parsed.data.baseCaption,
+        p_scheduled_at_utc: scheduled.utc,
+        p_media_ids: parsed.data.mediaIds,
+        p_targets: parsed.data.targets,
+      });
   return c.json({ id }, 201);
 });
 
 app.patch("/api/targets/:id/cancel", async (c) => {
-  const db = ownerDatabase(c.env, c.get("jwt"));
+  const reviewer = c.get("accessRole") === "meta_reviewer";
+  const db = reviewer ? serviceDatabase(c) : ownerDatabase(c.env, c.get("jwt"));
+  const reviewerFilter = reviewer
+    ? "&platform=eq.instagram&authorization_context=eq.meta_review"
+    : "";
   const rows = await db.update<Array<{ id: string }>>(
-    `post_targets?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}&status=in.(draft,scheduled,blocked_authorization)`,
+    `post_targets?id=eq.${encodeURIComponent(c.req.param("id"))}&owner_id=eq.${c.get("user").id}${reviewerFilter}&publish_request_sent_at=is.null&status=in.(draft,scheduled,blocked_authorization)`,
     { status: "cancelled", updated_at: new Date().toISOString() },
   );
   if (!rows.length) return c.json({ error: "target_not_cancellable" }, 409);
@@ -657,15 +798,19 @@ app.post("/api/targets/:id/resolve", async (c) => {
       updated_at: new Date().toISOString(),
     },
   );
-  await updateMediaRetentionForPost(
-    new SupabaseRest(c.env),
-    existing[0]!.post_id,
-  );
+  await updateMediaRetentionForPost(serviceDatabase(c), existing[0]!.post_id);
   return c.json({ ok: true, status: outcome });
 });
 
 app.delete("/api/media/:id", async (c) => {
-  const db = ownerDatabase(c.env, c.get("jwt"));
+  const db =
+    c.get("accessRole") === "meta_reviewer"
+      ? serviceDatabase(c)
+      : ownerDatabase(c.env, c.get("jwt"));
+  // Authenticated clients have SELECT-only table access. The Worker performs
+  // these fixed cleanup transitions with its service role after rechecking the
+  // authenticated workspace and confirming the provider outcome.
+  const mutationDb = serviceDatabase(c);
   const rows = await db.select<
     Array<{
       id: string;
@@ -702,7 +847,7 @@ app.delete("/api/media/:id", async (c) => {
       },
       409,
     );
-  await db.update(
+  await mutationDb.update(
     `media_assets?id=eq.${media.id}&owner_id=eq.${c.get("user").id}`,
     {
       deletion_status: "pending",
@@ -714,7 +859,7 @@ app.delete("/api/media/:id", async (c) => {
     const deletion = reservationDeletionTarget(media);
     await deleteUploadThingFile(c.env, deletion.identifier, deletion.keyType);
   } catch {
-    await db.update(
+    await mutationDb.update(
       `media_assets?id=eq.${media.id}&owner_id=eq.${c.get("user").id}`,
       {
         deletion_status: "failed",
@@ -730,7 +875,7 @@ app.delete("/api/media/:id", async (c) => {
       502,
     );
   }
-  await db.update(
+  await mutationDb.update(
     `media_assets?id=eq.${media.id}&owner_id=eq.${c.get("user").id}`,
     {
       upload_status: "deleted",
@@ -745,18 +890,36 @@ app.delete("/api/media/:id", async (c) => {
 });
 
 app.post("/api/analytics/sync", async (c) => {
-  const allowed = await ownerDatabase(c.env, c.get("jwt")).rpc<boolean>(
-    "consume_rate_limit",
-    { p_route: "analytics_sync", p_limit: 5, p_window_seconds: 60 },
-  );
+  const reviewer = c.get("accessRole") === "meta_reviewer";
+  const allowed = reviewer
+    ? await serviceDatabase(c).rpc<boolean>("consume_meta_review_rate_limit", {
+        p_reviewer_id: c.get("user").id,
+        p_route: "analytics_sync",
+        p_limit: 5,
+        p_window_seconds: 60,
+      })
+    : await ownerDatabase(c.env, c.get("jwt")).rpc<boolean>(
+        "consume_rate_limit",
+        { p_route: "analytics_sync", p_limit: 5, p_window_seconds: 60 },
+      );
   if (!allowed) return c.json({ error: "rate_limit_exceeded" }, 429);
-  return c.json({ synced: await syncAnalyticsBatch(c.env, 25) });
+  return c.json({
+    synced: await syncAnalyticsBatch(c.env, 25, {
+      authorizationContext: reviewer ? "meta_review" : "owner",
+      ownerId: c.get("user").id,
+    }),
+  });
 });
 
 app.get("/api/capabilities/:platform", (c) => {
   const parsed = platformSchema.safeParse(c.req.param("platform") ?? "");
   if (!parsed.success) return c.json({ error: "unsupported_platform" }, 404);
-  return c.json(adapterFor(parsed.data, c.env).getCapabilities());
+  return c.json(
+    adapterFor(parsed.data, c.env, {
+      metaReviewTestingAuthorized:
+        c.get("accessRole") === "meta_reviewer" && parsed.data === "instagram",
+    }).getCapabilities(),
+  );
 });
 
 const worker = {
@@ -775,40 +938,92 @@ const worker = {
       }),
     );
     const workerId = crypto.randomUUID();
-    const claimed = await db.rpc<Array<{ id: string }>>("claim_due_targets", {
+    const claimed = await db.rpc<
+      Array<{
+        id: string;
+        row_version: number;
+        authorization_generation?: string | null;
+      }>
+    >("claim_due_targets", {
       p_worker_id: workerId,
       p_limit: 100,
       p_lease_seconds: 300,
     });
+    const reviewer = metaReviewerConfiguration(env);
+    if (reviewer.enabled && reviewer.configured) {
+      try {
+        const generation = await requireReviewerAuthorization(
+          env,
+          reviewer.userId,
+        );
+        claimed.push(
+          ...(await db.rpc<
+            Array<{
+              id: string;
+              row_version: number;
+              authorization_generation?: string | null;
+            }>
+          >("claim_meta_review_targets", {
+            p_worker_id: workerId,
+            p_reviewer_id: reviewer.userId,
+            p_reviewer_email: reviewer.email,
+            p_generation: generation,
+            p_limit: 100,
+            p_lease_seconds: 300,
+          })),
+        );
+      } catch {
+        logWorkerError("reviewer_due_claim_skipped");
+      }
+    }
     for (const target of claimed) {
       // Once status is queued, the consumer takes its own atomic lease.
-      await db.update(`post_targets?id=eq.${target.id}`, {
-        lease_owner: null,
-        lease_expires_at: null,
-      });
+      const released = await db.update<Array<{ row_version: number }>>(
+        `post_targets?id=eq.${encodeURIComponent(target.id)}&lease_owner=eq.${encodeURIComponent(workerId)}&row_version=eq.${target.row_version}&status=eq.queued`,
+        {
+          lease_owner: null,
+          lease_expires_at: null,
+        },
+      );
+      if (released.length !== 1) continue;
       try {
         await env.PUBLISH_QUEUE.send({
           targetId: target.id,
+          ...(target.authorization_generation
+            ? { authorizationGeneration: target.authorization_generation }
+            : {}),
           mode: "publish",
           requestedAt: new Date().toISOString(),
         });
       } catch {
         // No provider request exists yet, so the next cron may safely dispatch again.
-        await db.update(`post_targets?id=eq.${target.id}`, {
-          status: "scheduled",
-          last_error_code: "queue_dispatch_failed",
-          last_error_message: "Queue dispatch failed before publication began.",
-          lease_owner: null,
-          lease_expires_at: null,
-        });
+        await db.update(
+          `post_targets?id=eq.${encodeURIComponent(target.id)}&row_version=eq.${released[0]!.row_version}&status=eq.queued&publish_request_sent_at=is.null`,
+          {
+            status: "scheduled",
+            last_error_code: "queue_dispatch_failed",
+            last_error_message:
+              "Queue dispatch failed before publication began.",
+            lease_owner: null,
+            lease_expires_at: null,
+          },
+        );
         logWorkerError("queue_dispatch_failed", { targetId: target.id });
       }
     }
     const scheduledMinute = new Date(controller.scheduledTime).getUTCMinutes();
-    if (scheduledMinute === 17) context.waitUntil(syncAnalyticsBatch(env, 25));
+    if (scheduledMinute === 17)
+      context.waitUntil(
+        syncAnalyticsBatch(env, 25, { authorizationContext: "owner" }),
+      );
     if (scheduledMinute === 23) {
       context.waitUntil(cleanupMedia(env));
       context.waitUntil(cleanupExpiredReservations(env));
+      context.waitUntil(
+        new SupabaseRest(env).rpc("expire_pending_oauth_states", {
+          p_limit: 250,
+        }),
+      );
     }
   },
   async queue(batch: MessageBatch<QueueJob>, env: Env) {

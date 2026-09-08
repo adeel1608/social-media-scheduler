@@ -14,6 +14,17 @@ const phase2bPreflightSql = readFileSync(
   resolve(migrationDirectory, "202609050004_phase_2b_preflight.sql"),
   "utf8",
 ).toLowerCase();
+const metaReviewSql = readFileSync(
+  resolve(migrationDirectory, "202609060001_meta_review_access.sql"),
+  "utf8",
+).toLowerCase();
+const analyticsIsolationSql = readFileSync(
+  resolve(
+    migrationDirectory,
+    "202609070009_analytics_generation_isolation.sql",
+  ),
+  "utf8",
+).toLowerCase();
 
 describe("Supabase migrations", () => {
   it("enables RLS on every owner data table", () => {
@@ -91,5 +102,46 @@ describe("Supabase migrations", () => {
     );
     expect(phase2bPreflightSql).toContain("to service_role");
     expect(phase2bPreflightSql).not.toContain("request.jwt.claim.role");
+  });
+
+  it("keeps Meta review writes service-only and durably scoped", () => {
+    expect(migrationFiles).toContain("202609060001_meta_review_access.sql");
+    expect(metaReviewSql).toContain("authorization_context");
+    expect(metaReviewSql).toContain("function public.create_meta_review_post");
+    expect(metaReviewSql).toContain(
+      "function public.reserve_meta_review_media",
+    );
+    expect(metaReviewSql).toContain(
+      "function public.verify_meta_review_schema",
+    );
+    expect(metaReviewSql).toContain("from public, anon, authenticated");
+    expect(metaReviewSql).toContain("to service_role");
+    expect(metaReviewSql).toContain(
+      "new.authorization_context = 'meta_review'",
+    );
+  });
+
+  it("isolates reviewer analytics by current authorization generation", () => {
+    expect(migrationFiles).toContain(
+      "202609070009_analytics_generation_isolation.sql",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "add column authorization_generation uuid",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "function public.list_meta_review_analytics",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "p_generation = app_private.current_review_generation(p_reviewer_id)",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "new.authorization_generation := target_generation",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "revoke select on table public.analytics_snapshots from service_role",
+    );
+    expect(analyticsIsolationSql).toContain(
+      "create or replace function public.verify_meta_review_schema()",
+    );
   });
 });

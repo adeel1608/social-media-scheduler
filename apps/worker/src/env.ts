@@ -22,6 +22,9 @@ export interface Env {
   META_REDIRECT_URI: string;
   META_GRAPH_VERSION: string;
   META_APP_REVIEW_APPROVED: string;
+  META_REVIEW_MODE: string;
+  META_REVIEWER_EMAIL: string;
+  META_REVIEWER_USER_ID: string;
   TIKTOK_CLIENT_KEY: string;
   TIKTOK_CLIENT_SECRET: string;
   TIKTOK_REDIRECT_URI: string;
@@ -34,6 +37,7 @@ export interface Env {
 
 export interface QueueJob {
   targetId: string;
+  authorizationGeneration?: string;
   mode: "publish" | "upload" | "poll";
   requestedAt: string;
 }
@@ -60,6 +64,9 @@ export const configurationKeys = [
   "META_REDIRECT_URI",
   "META_GRAPH_VERSION",
   "META_APP_REVIEW_APPROVED",
+  "META_REVIEW_MODE",
+  "META_REVIEWER_EMAIL",
+  "META_REVIEWER_USER_ID",
   "TIKTOK_CLIENT_KEY",
   "TIKTOK_CLIENT_SECRET",
   "TIKTOK_REDIRECT_URI",
@@ -76,6 +83,7 @@ export const requiredProductionEnv: Array<keyof Env> = [
   "APP_URL",
   "WORKER_PUBLIC_URL",
   "OWNER_EMAIL",
+  "META_REVIEW_MODE",
   "NOTIFICATION_EMAIL",
   "TIMEZONE",
   "SUPABASE_URL",
@@ -225,7 +233,11 @@ export function configurationStatus(env: Env) {
       }
     }
   }
-  for (const key of ["OWNER_EMAIL", "NOTIFICATION_EMAIL"] as const) {
+  for (const key of [
+    "OWNER_EMAIL",
+    "NOTIFICATION_EMAIL",
+    "META_REVIEWER_EMAIL",
+  ] as const) {
     if (env[key] && !isBasicEmail(env[key])) invalid.push(key);
   }
   if (env.OWNER_EMAIL && env.OWNER_EMAIL !== env.OWNER_EMAIL.toLowerCase()) {
@@ -255,6 +267,7 @@ export function configurationStatus(env: Env) {
   for (const key of [
     "LIVE_TEST_CONFIRM",
     "META_APP_REVIEW_APPROVED",
+    "META_REVIEW_MODE",
     "TIKTOK_CONTENT_POSTING_AUDITED",
     "YOUTUBE_API_AUDIT_APPROVED",
   ] as const) {
@@ -262,6 +275,12 @@ export function configurationStatus(env: Env) {
       invalid.push(key);
     }
   }
+  const reviewer = metaReviewerConfiguration(env);
+  if (reviewer.enabled && !reviewer.configured) {
+    if (!env.META_REVIEWER_EMAIL) missing.push("META_REVIEWER_EMAIL");
+    if (!env.META_REVIEWER_USER_ID) missing.push("META_REVIEWER_USER_ID");
+  }
+  for (const key of reviewer.invalid) invalid.push(key);
   const approvals = {
     instagram: env.META_APP_REVIEW_APPROVED === "true",
     tiktok: env.TIKTOK_CONTENT_POSTING_AUDITED === "true",
@@ -274,6 +293,40 @@ export function configurationStatus(env: Env) {
     approvals,
     liveTestSafetyEnabled: env.LIVE_TEST_CONFIRM === "true",
     environment: env.ENVIRONMENT,
+  };
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function metaReviewerConfiguration(env: Env) {
+  const enabled = env.META_REVIEW_MODE === "true";
+  const email = env.META_REVIEWER_EMAIL?.trim().toLowerCase() ?? "";
+  const userId = env.META_REVIEWER_USER_ID?.trim().toLowerCase() ?? "";
+  const invalid: Array<keyof Env> = [];
+  if (email && (!isBasicEmail(email) || email !== env.META_REVIEWER_EMAIL)) {
+    invalid.push("META_REVIEWER_EMAIL");
+  }
+  if (userId && !UUID_PATTERN.test(userId)) {
+    invalid.push("META_REVIEWER_USER_ID");
+  }
+  if (
+    email &&
+    env.OWNER_EMAIL &&
+    email === env.OWNER_EMAIL.trim().toLowerCase()
+  ) {
+    invalid.push("META_REVIEWER_EMAIL");
+  }
+  if ((email && !userId) || (!email && userId)) {
+    if (!email) invalid.push("META_REVIEWER_EMAIL");
+    if (!userId) invalid.push("META_REVIEWER_USER_ID");
+  }
+  return {
+    enabled,
+    configured: enabled && Boolean(email && userId) && invalid.length === 0,
+    email,
+    userId,
+    invalid: [...new Set(invalid)],
   };
 }
 

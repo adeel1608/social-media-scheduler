@@ -90,8 +90,27 @@ if (phase2bResult?.ready !== true) {
   throw new Error("Phase 2B schema preflight did not report ready");
 }
 
+let metaReviewResponse;
+try {
+  metaReviewResponse = await boundedFetch(
+    new URL("/rest/v1/rpc/verify_meta_review_schema", baseUrl),
+    { method: "POST", headers, body: "{}" },
+  );
+} catch {
+  throw new Error("Meta review migration verification request failed");
+}
+if (!metaReviewResponse.ok) {
+  throw new Error(
+    `Meta review schema is missing or inaccessible to service_role (HTTP ${metaReviewResponse.status})`,
+  );
+}
+const metaReviewResult = await metaReviewResponse.json().catch(() => null);
+if (metaReviewResult?.ready !== true) {
+  throw new Error("Meta review schema preflight did not report ready");
+}
+
 console.log(
-  "Verified queue recovery, notification reconciliation, and Phase 2B schemas with non-mutating service-role preflights.",
+  "Verified queue recovery, notification reconciliation, Phase 2B, and Meta review schemas with non-mutating service-role preflights.",
 );
 
 async function boundedFetch(url, init) {

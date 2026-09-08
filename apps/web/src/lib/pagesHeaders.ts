@@ -15,7 +15,7 @@ export function createCloudflarePagesHeaders(
     .join(" ");
 
   return `/*
-  Content-Security-Policy: default-src 'self'; script-src 'self' ${TURNSTILE_ORIGIN}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src ${connectSources}; frame-src ${TURNSTILE_ORIGIN}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' ${TURNSTILE_ORIGIN}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src ${connectSources}; frame-src ${TURNSTILE_ORIGIN}; frame-ancestors 'none'; base-uri 'self'; form-action 'self' ${configuration.apiUrl}
   Referrer-Policy: strict-origin-when-cross-origin
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY

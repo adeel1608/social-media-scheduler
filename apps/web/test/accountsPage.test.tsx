@@ -20,8 +20,11 @@ const mocks = vi.hoisted(() => ({
     demoMode: false,
     loading: false,
     session: null as Session | null,
+    accessRole: "owner" as "owner" | "meta_reviewer",
   },
   apiRequest: vi.fn(),
+  startOAuthNavigation: vi.fn(),
+  completeOAuthNavigation: vi.fn(),
 }));
 
 vi.mock("../src/context/AuthContext", () => ({
@@ -30,6 +33,10 @@ vi.mock("../src/context/AuthContext", () => ({
 
 vi.mock("../src/lib/api", () => ({
   apiRequest: (...arguments_: unknown[]) => mocks.apiRequest(...arguments_),
+  startOAuthNavigation: (...arguments_: unknown[]) =>
+    mocks.startOAuthNavigation(...arguments_),
+  completeOAuthNavigation: (...arguments_: unknown[]) =>
+    mocks.completeOAuthNavigation(...arguments_),
 }));
 
 const session = {
@@ -56,7 +63,10 @@ function account(
 beforeEach(() => {
   mocks.auth.demoMode = false;
   mocks.auth.session = session;
+  mocks.auth.accessRole = "owner";
   mocks.apiRequest.mockReset();
+  mocks.startOAuthNavigation.mockReset();
+  mocks.completeOAuthNavigation.mockReset();
   window.history.replaceState({}, "", "/accounts");
 });
 
@@ -103,6 +113,30 @@ describe("authoritative Connected Accounts UI", () => {
       expect(screen.getAllByText("No server account found")).toHaveLength(3),
     );
     expect(screen.getByRole("button", { name: "Connect TikTok" })).toBeTruthy();
+  });
+
+  it("shows only the reviewer-owned Instagram workspace in reviewer mode", async () => {
+    mocks.auth.accessRole = "meta_reviewer";
+    mocks.apiRequest.mockResolvedValue({
+      data: [
+        account("instagram", {
+          review_testing_authorized: true,
+          metadata: { displayName: "Meta Review Account" },
+        }),
+      ],
+    });
+    render(<AccountsPage />);
+
+    expect(await screen.findByText("Meta Review Account")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Temporary Meta review testing is enabled for this workspace",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect TikTok" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Connect YouTube" }),
+    ).toBeNull();
   });
 
   it("renders TikTok connected only when the server reports it", async () => {
@@ -172,6 +206,24 @@ describe("authoritative Connected Accounts UI", () => {
       await screen.findByText("TikTok connection confirmed by the server."),
     ).toBeTruthy();
     expect(mocks.apiRequest).toHaveBeenCalledWith("/api/accounts", session);
+    expect(window.location.search).toBe("");
+  });
+
+  it("finishes an escrowed callback with the current session and no URL secret", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/accounts?oauth=pending&platform=instagram",
+    );
+    render(<AccountsPage />);
+
+    await waitFor(() =>
+      expect(mocks.completeOAuthNavigation).toHaveBeenCalledWith(
+        "instagram",
+        session,
+      ),
+    );
+    expect(mocks.apiRequest).not.toHaveBeenCalled();
     expect(window.location.search).toBe("");
   });
 

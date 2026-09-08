@@ -13,6 +13,33 @@ const phase2bPreflightFile = "202609050004_phase_2b_preflight.sql";
 const phase2bPreflightSql = files.includes(phase2bPreflightFile)
   ? migrationContents[files.indexOf(phase2bPreflightFile)].toLowerCase()
   : "";
+const metaReviewMigrationFile = "202609060001_meta_review_access.sql";
+const metaReviewMigrationSql = files.includes(metaReviewMigrationFile)
+  ? migrationContents[files.indexOf(metaReviewMigrationFile)].toLowerCase()
+  : "";
+const oauthCompletionMigrationFile =
+  "202609070007_authenticated_oauth_completion.sql";
+const oauthCompletionMigrationSql = files.includes(oauthCompletionMigrationFile)
+  ? migrationContents[files.indexOf(oauthCompletionMigrationFile)].toLowerCase()
+  : "";
+const mediaLeastPrivilegeMigrationFile =
+  "202609070008_media_least_privilege.sql";
+const mediaLeastPrivilegeMigrationSql = files.includes(
+  mediaLeastPrivilegeMigrationFile,
+)
+  ? migrationContents[
+      files.indexOf(mediaLeastPrivilegeMigrationFile)
+    ].toLowerCase()
+  : "";
+const analyticsIsolationMigrationFile =
+  "202609070009_analytics_generation_isolation.sql";
+const analyticsIsolationMigrationSql = files.includes(
+  analyticsIsolationMigrationFile,
+)
+  ? migrationContents[
+      files.indexOf(analyticsIsolationMigrationFile)
+    ].toLowerCase()
+  : "";
 const requiredTables = [
   "installation_settings",
   "connected_accounts",
@@ -99,6 +126,82 @@ const requirements = {
     ) &&
     phase2bPreflightSql.includes("to service_role") &&
     !phase2bPreflightSql.includes("request.jwt.claim.role"),
+  "isolated Meta review workspace":
+    metaReviewMigrationSql.includes("authorization_context") &&
+    metaReviewMigrationSql.includes(
+      "function public.create_meta_review_post",
+    ) &&
+    metaReviewMigrationSql.includes(
+      "function public.reserve_meta_review_media",
+    ) &&
+    metaReviewMigrationSql.includes(
+      "function public.verify_meta_review_schema",
+    ) &&
+    metaReviewMigrationSql.includes("from public, anon, authenticated") &&
+    metaReviewMigrationSql.includes("to service_role"),
+  "authenticated OAuth completion":
+    oauthCompletionMigrationSql.includes(
+      "function public.record_bound_oauth_callback",
+    ) &&
+    oauthCompletionMigrationSql.includes(
+      "function public.consume_oauth_completion",
+    ) &&
+    oauthCompletionMigrationSql.includes(
+      "function public.cancel_pending_oauth",
+    ) &&
+    oauthCompletionMigrationSql.includes(
+      "function public.expire_pending_oauth_states",
+    ) &&
+    oauthCompletionMigrationSql.includes("pending_authorization_code") &&
+    oauthCompletionMigrationSql.includes("pending_completion_handle_hash") &&
+    oauthCompletionMigrationSql.includes(
+      "from public, anon, authenticated, service_role",
+    ),
+  "media least privilege":
+    mediaLeastPrivilegeMigrationSql.includes(
+      "drop policy if exists media_assets_owner_all",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "create policy media_assets_owner_select",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "revoke insert, update, delete, truncate, references, trigger",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "from public, anon, authenticated",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "grant select on table public.media_assets to authenticated",
+    ) &&
+    mediaLeastPrivilegeMigrationSql.includes(
+      "not has_table_privilege('authenticated', 'public.media_assets', 'update')",
+    ),
+  "reviewer analytics generation isolation":
+    analyticsIsolationMigrationSql.includes(
+      "add column authorization_generation uuid",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "analytics_snapshots_review_generation_idx",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "function public.list_meta_review_analytics",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "p_generation = app_private.current_review_generation(p_reviewer_id)",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "new.authorization_generation := target_generation",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "revoke select on table public.analytics_snapshots from service_role",
+    ) &&
+    analyticsIsolationMigrationSql.includes(
+      "grant execute on function public.list_meta_review_analytics",
+    ) &&
+    analyticsIsolationMigrationSql.includes("to service_role") &&
+    analyticsIsolationMigrationSql.includes(
+      "create or replace function public.verify_meta_review_schema()",
+    ),
 };
 if (missingTables.length || Object.values(requirements).includes(false)) {
   console.error({ missingTables, requirements });

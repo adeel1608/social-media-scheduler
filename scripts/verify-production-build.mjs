@@ -8,6 +8,8 @@ const serverSecretSentinels = {
   UPLOADTHING_TOKEN: "POSTLINE_TEST_UPLOAD_TOKEN_MUST_NOT_APPEAR_7A4D",
   RESEND_API_KEY: "POSTLINE_TEST_RESEND_KEY_MUST_NOT_APPEAR_7A4D",
   META_APP_SECRET: "POSTLINE_TEST_META_SECRET_MUST_NOT_APPEAR_7A4D",
+  META_REVIEWER_EMAIL: "POSTLINE_TEST_REVIEWER_EMAIL_MUST_NOT_APPEAR_7A4D",
+  META_REVIEWER_USER_ID: "POSTLINE_TEST_REVIEWER_UUID_MUST_NOT_APPEAR_7A4D",
   TIKTOK_CLIENT_SECRET: "POSTLINE_TEST_TIKTOK_SECRET_MUST_NOT_APPEAR_7A4D",
   GOOGLE_CLIENT_SECRET: "POSTLINE_TEST_GOOGLE_SECRET_MUST_NOT_APPEAR_7A4D",
   CLOUDFLARE_API_TOKEN: "POSTLINE_TEST_CLOUDFLARE_TOKEN_MUST_NOT_APPEAR_7A4D",
@@ -34,6 +36,7 @@ const result = spawnSync(buildCommand.command, buildCommand.arguments, {
     VITE_SUPABASE_ANON_KEY:
       "sb_publishable_CI_ONLY_NOT_A_CREDENTIAL_1234567890",
     VITE_TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
+    VITE_META_REVIEW_MODE: "false",
     VITE_OPERATOR_NAME: "Postline CI",
     VITE_PUBLIC_CONTACT_EMAIL: "ci-contact@postline.dev",
     ...serverSecretSentinels,
@@ -115,8 +118,42 @@ if (indexHtml.includes("__POSTLINE_APP_URL__")) {
   throw new Error("Production web metadata contains an unresolved URL");
 }
 
+const reviewBuild = spawnSync(buildCommand.command, buildCommand.arguments, {
+  cwd: resolve("."),
+  env: {
+    ...process.env,
+    VITE_DEMO_MODE: "false",
+    VITE_APP_URL: "https://postline-ci.pages.dev",
+    VITE_API_URL: "https://postline-ci.workers.dev",
+    VITE_SUPABASE_URL: "https://postline-ci.supabase.co",
+    VITE_SUPABASE_ANON_KEY:
+      "sb_publishable_CI_ONLY_NOT_A_CREDENTIAL_1234567890",
+    VITE_TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
+    VITE_META_REVIEW_MODE: "true",
+    VITE_OPERATOR_NAME: "Postline CI",
+    VITE_PUBLIC_CONTACT_EMAIL: "ci-contact@postline.dev",
+    ...serverSecretSentinels,
+  },
+  stdio: "inherit",
+});
+if (reviewBuild.error) throw reviewBuild.error;
+if (reviewBuild.status !== 0) process.exit(reviewBuild.status ?? 1);
+const reviewBundleFiles = await listFiles(distDirectory);
+if (reviewBundleFiles.some((file) => file.endsWith(".map")))
+  throw new Error("Review-mode production web build emitted a source map");
+for (const file of reviewBundleFiles) {
+  if (!/[.](?:css|html|js|map)$/.test(file)) continue;
+  const contents = await readFile(file, "utf8");
+  for (const [name, sentinel] of Object.entries(serverSecretSentinels)) {
+    if (contents.includes(name) || contents.includes(sentinel))
+      throw new Error(
+        `Review-mode bundle included server-only ${name}: ${file}`,
+      );
+  }
+}
+
 console.log(
-  `Production web build passed with validated public configuration, no source maps, and ${bundleFiles.length} output files containing none of ${Object.keys(serverSecretSentinels).length} server-secret sentinels.`,
+  "Production web builds passed in disabled and review-visible modes with validated public configuration, no source maps, and no server-secret sentinels.",
 );
 
 async function listFiles(directory) {

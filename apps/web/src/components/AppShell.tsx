@@ -84,7 +84,21 @@ function NavigationGroup({
 
 export function AppShell() {
   const location = useLocation();
-  const { demoMode, signOut, session } = useAuth();
+  const { demoMode, signOut, session, accessRole } = useAuth();
+  const reviewer = accessRole === "meta_reviewer";
+  const visiblePrimaryNavigation = reviewer
+    ? primaryNavigation.filter((item) =>
+        ["/composer", "/queue", "/calendar"].includes(item.to),
+      )
+    : primaryNavigation;
+  const visibleContentNavigation = reviewer
+    ? contentNavigation.filter((item) =>
+        ["/history", "/analytics"].includes(item.to),
+      )
+    : contentNavigation;
+  const visibleSettingsNavigation = reviewer
+    ? settingsNavigation.filter((item) => item.to === "/accounts")
+    : settingsNavigation;
   const baseHeading = titles[location.pathname] ?? titles["/analytics"]!;
   const today = new Date().toLocaleDateString("en-AU", {
     timeZone: "Australia/Melbourne",
@@ -97,7 +111,11 @@ export function AppShell() {
     : location.pathname === "/analytics"
       ? {
           eyebrow: today,
-          title: demoMode ? "Good morning, Adeel" : "Performance overview",
+          title: demoMode
+            ? "Good morning, Adeel"
+            : reviewer
+              ? "Instagram review analytics"
+              : "Performance overview",
         }
       : location.pathname === "/calendar"
         ? { ...baseHeading, eyebrow: "Australia/Melbourne" }
@@ -106,7 +124,11 @@ export function AppShell() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <NavLink to="/analytics" className="brand" aria-label="Postline home">
+        <NavLink
+          to={reviewer ? "/accounts" : "/analytics"}
+          className="brand"
+          aria-label="Postline home"
+        >
           <span className="brand-mark">P</span>
           <span className="brand-word">postline</span>
         </NavLink>
@@ -119,17 +141,17 @@ export function AppShell() {
 
         <nav aria-label="Main navigation">
           <NavigationGroup
-            items={primaryNavigation}
+            items={visiblePrimaryNavigation}
             showDemoCounts={demoMode}
           />
           <NavigationGroup
             label="CONTENT"
-            items={contentNavigation}
+            items={visibleContentNavigation}
             showDemoCounts={demoMode}
           />
           <NavigationGroup
             label="WORKSPACE"
-            items={settingsNavigation}
+            items={visibleSettingsNavigation}
             showDemoCounts={demoMode}
           />
         </nav>
@@ -149,9 +171,15 @@ export function AppShell() {
             onClick={() => void signOut()}
             aria-label="Sign out"
           >
-            <span className="avatar">AD</span>
+            <span className="avatar">{reviewer ? "MR" : "AD"}</span>
             <span className="profile-copy">
-              <strong>{demoMode ? "Adeel" : "Installation owner"}</strong>
+              <strong>
+                {demoMode
+                  ? "Adeel"
+                  : reviewer
+                    ? "Meta reviewer"
+                    : "Installation owner"}
+              </strong>
               <small>
                 {demoMode ? "Local demonstration" : session?.user.email}
               </small>

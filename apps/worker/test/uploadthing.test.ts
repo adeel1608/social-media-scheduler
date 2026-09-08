@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Env } from "../src/env";
 import {
@@ -9,6 +9,8 @@ import {
 } from "../src/uploadthing";
 
 const mediaId = "123e4567-e89b-42d3-a456-426614174000";
+
+afterEach(() => vi.restoreAllMocks());
 
 function token() {
   return btoa(
@@ -47,6 +49,7 @@ function dependencies(
       authenticated: true,
       jwt: "owner-jwt",
       user: { id: "owner-id", email: "owner@example.com" },
+      accessRole: "owner",
     }),
     consumeRateLimit: vi.fn().mockResolvedValue(true),
     reserve: vi.fn().mockResolvedValue(mediaId),
@@ -93,6 +96,39 @@ describe("UploadThing initiation", () => {
     expect(result.ownerId).toBe("owner-id");
     expect(result.mediaId).toBe(mediaId);
     expect(deps.reserve).toHaveBeenCalledOnce();
+  });
+
+  it("binds a reviewer reservation to the authenticated reviewer identity", async () => {
+    const deps = dependencies({
+      authenticate: vi.fn().mockResolvedValue({
+        authenticated: true,
+        jwt: "reviewer-jwt",
+        user: {
+          id: "reviewer-id",
+          email: "reviewer@example.com",
+        },
+        accessRole: "meta_reviewer",
+      }),
+    });
+    const result = await authorizeUploadInitiation(
+      env(),
+      new Request("https://worker.example.test/api/uploadthing", {
+        headers: { Authorization: "Bearer reviewer-jwt" },
+      }),
+      [{ name: "clip.mp4", type: "video/mp4", size: 1_024 }],
+      input(),
+      deps,
+    );
+
+    expect(result.ownerId).toBe("reviewer-id");
+    expect(deps.reserve).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        accessRole: "meta_reviewer",
+        user: expect.objectContaining({ id: "reviewer-id" }),
+      }),
+      input(),
+    );
   });
 
   it("rejects a single file larger than the 1.8 GiB application cap", async () => {
@@ -163,6 +199,7 @@ describe("UploadThing callbacks", () => {
   });
 
   it("rejects an unsigned callback before application completion runs", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     const response = await handleUploadThingRequest(
       env(),
       new Request("https://worker.example.test/api/uploadthing?slug=media", {
@@ -177,8 +214,12 @@ describe("UploadThing callbacks", () => {
     );
 
     expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      message: "Invalid signature",
+    await expect(response.json()).resolves.toEqual({
+      code: "UPLOAD_FAILED",
+      message: "Upload could not be completed.",
     });
+    expect(errorLog).toHaveBeenCalledWith(
+      '{"level":"error","message":"uploadthing_route_failed","state":"upload_route","classification":"request_rejected"}',
+    );
   });
 });

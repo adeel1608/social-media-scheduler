@@ -63,9 +63,12 @@ interface AnalyticsSnapshot {
 }
 
 export function AnalyticsPage() {
-  const { demoMode, session } = useAuth();
+  const { demoMode, session, accessRole } = useAuth();
+  const reviewer = accessRole === "meta_reviewer";
   const [snapshots, setSnapshots] = useState<AnalyticsSnapshot[]>([]);
-  const [platformFilter, setPlatformFilter] = useState("all");
+  const [platformFilter, setPlatformFilter] = useState(
+    reviewer ? "instagram" : "all",
+  );
   const [contentFilter, setContentFilter] = useState("all");
   const [rangeDays, setRangeDays] = useState(28);
   const [message, setMessage] = useState("");
@@ -200,7 +203,7 @@ export function AnalyticsPage() {
               : "The setup page reflects current server-side configuration without exposing secret values."}
           </p>
         </div>
-        <Link to="/setup">
+        <Link to={reviewer ? "/accounts" : "/setup"}>
           Review setup <ArrowRight size={15} />
         </Link>
       </section>
@@ -229,10 +232,10 @@ export function AnalyticsPage() {
               onChange={(event) => setPlatformFilter(event.target.value)}
               aria-label="Analytics platform"
             >
-              <option value="all">All platforms</option>
+              {!reviewer && <option value="all">All platforms</option>}
               <option value="instagram">Instagram</option>
-              <option value="tiktok">TikTok</option>
-              <option value="youtube">YouTube</option>
+              {!reviewer && <option value="tiktok">TikTok</option>}
+              {!reviewer && <option value="youtube">YouTube</option>}
             </select>
           </label>
           <label className="select-button">
@@ -359,7 +362,10 @@ export function AnalyticsPage() {
             </div>
           </div>
           <div className="platform-breakdown">
-            {(["instagram", "tiktok", "youtube"] as const).map((platform) => {
+            {(reviewer
+              ? (["instagram"] as const)
+              : (["instagram", "tiktok", "youtube"] as const)
+            ).map((platform) => {
               const value = demoMode
                 ? { instagram: 20_300, tiktok: 12_800, youtube: 8_200 }[
                     platform

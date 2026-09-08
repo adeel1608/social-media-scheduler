@@ -19,6 +19,8 @@ export interface Database {
           id: string;
           owner_id: string;
           platform: Platform;
+          authorization_context: "owner" | "meta_review";
+          authorization_generation: string | null;
           remote_account_id: string;
           username: string | null;
           encrypted_access_token: string;
@@ -59,6 +61,8 @@ export interface Database {
         Row: {
           id: string;
           owner_id: string;
+          authorization_context: "owner" | "meta_review";
+          authorization_generation: string | null;
           object_key: string;
           storage_provider: "r2" | "uploadthing";
           provider_file_key: string | null;
@@ -82,6 +86,8 @@ export interface Database {
         Row: {
           id: string;
           owner_id: string;
+          authorization_context: "owner" | "meta_review";
+          authorization_generation: string | null;
           title: string;
           base_caption: string;
           timezone: string;
@@ -97,6 +103,8 @@ export interface Database {
           post_id: string;
           connected_account_id: string | null;
           platform: Platform;
+          authorization_context: "owner" | "meta_review";
+          authorization_generation: string | null;
           status: TargetStatus;
           metadata: Record<string, unknown>;
           selected_media_ids: string[];
@@ -112,6 +120,22 @@ export interface Database {
           published_at: string | null;
           created_at: string;
           updated_at: string;
+        };
+      };
+      analytics_snapshots: {
+        Row: {
+          id: string;
+          owner_id: string;
+          post_target_id: string | null;
+          connected_account_id: string;
+          platform: Platform;
+          authorization_generation: string | null;
+          captured_at: string;
+          period_start: string | null;
+          period_end: string | null;
+          normalized_metrics: Record<string, unknown>;
+          raw_metrics: Record<string, unknown>;
+          unavailable_metrics: string[];
         };
       };
     };

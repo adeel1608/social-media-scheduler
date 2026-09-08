@@ -35,11 +35,14 @@ const demoEvents: CalendarEvent[] = demoEventSeed.map(
 );
 
 export function CalendarPage() {
-  const { demoMode, session } = useAuth();
+  const { demoMode, session, accessRole } = useAuth();
+  const reviewer = accessRole === "meta_reviewer";
   const [month, setMonth] = useState(() =>
     demoMode ? new Date(2026, 8, 1) : new Date(),
   );
-  const [platform, setPlatform] = useState<Platform | "all">("all");
+  const [platform, setPlatform] = useState<Platform | "all">(
+    reviewer ? "instagram" : "all",
+  );
   const [liveEvents, setLiveEvents] = useState<CalendarEvent[]>([]);
   const [error, setError] = useState("");
 
@@ -127,10 +130,10 @@ export function CalendarPage() {
                 setPlatform(event.target.value as Platform | "all")
               }
             >
-              <option value="all">All platforms</option>
+              {!reviewer && <option value="all">All platforms</option>}
               <option value="instagram">Instagram</option>
-              <option value="tiktok">TikTok</option>
-              <option value="youtube">YouTube</option>
+              {!reviewer && <option value="tiktok">TikTok</option>}
+              {!reviewer && <option value="youtube">YouTube</option>}
             </select>
           </label>
           <Link className="primary-button" to="/composer">
