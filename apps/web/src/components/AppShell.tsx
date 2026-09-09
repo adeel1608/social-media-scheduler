@@ -84,7 +84,7 @@ function NavigationGroup({
 
 export function AppShell() {
   const location = useLocation();
-  const { demoMode, signOut, session, accessRole } = useAuth();
+  const { demoMode, simulationMode, signOut, session, accessRole } = useAuth();
   const reviewer = accessRole === "meta_reviewer";
   const visiblePrimaryNavigation = reviewer
     ? primaryNavigation.filter((item) =>
@@ -199,6 +199,11 @@ export function AppShell() {
             {demoMode && (
               <span className="demo-pill">
                 <Sparkles size={14} /> Demo data — no publishing
+              </span>
+            )}
+            {simulationMode && (
+              <span className="demo-pill" data-testid="simulation-badge">
+                <Sparkles size={14} /> Simulation only
               </span>
             )}
             <span className="timezone-pill">

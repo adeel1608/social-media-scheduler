@@ -7,7 +7,8 @@ import { apiRequest } from "../lib/api";
 import { publishedTargets } from "../lib/demoData";
 
 export function HistoryPage() {
-  const { demoMode, session } = useAuth();
+  const { demoMode, session, accessRole, simulationMode } = useAuth();
+  const reviewer = accessRole === "meta_reviewer";
   const [liveItems, setLiveItems] = useState<typeof publishedTargets>([]);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -62,9 +63,11 @@ export function HistoryPage() {
           <button className="soft-button">
             <CalendarRange size={16} /> Last 90 days
           </button>
-          <button className="soft-button">
-            <Download size={16} /> Export
-          </button>
+          {!reviewer && (
+            <button className="soft-button">
+              <Download size={16} /> Export
+            </button>
+          )}
         </div>
       </div>
       {error && <p className="form-error">{error}</p>}
@@ -96,23 +99,27 @@ export function HistoryPage() {
               <span>
                 <small>VIEWS</small>
                 <strong>
-                  {demoMode
-                    ? item.platform === "instagram"
-                      ? "18.4k"
-                      : item.platform === "tiktok"
-                        ? "12.8k"
-                        : "9.7k"
-                    : "Not provided"}
+                  {simulationMode
+                    ? "18.4k"
+                    : demoMode
+                      ? item.platform === "instagram"
+                        ? "18.4k"
+                        : item.platform === "tiktok"
+                          ? "12.8k"
+                          : "9.7k"
+                      : "Not provided"}
                 </strong>
               </span>
               <span>
                 <small>ENGAGEMENT</small>
                 <strong>
-                  {demoMode
-                    ? item.platform === "instagram"
-                      ? "8.7%"
-                      : "5.9%"
-                    : "Not provided"}
+                  {simulationMode
+                    ? "8.7%"
+                    : demoMode
+                      ? item.platform === "instagram"
+                        ? "8.7%"
+                        : "5.9%"
+                      : "Not provided"}
                 </strong>
               </span>
             </div>

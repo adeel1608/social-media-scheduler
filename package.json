@@ -21,6 +21,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "corepack pnpm --filter @scheduler/web test:e2e",
+    "test:meta-review-simulation": "corepack pnpm --filter @scheduler/web exec playwright test --config meta-review-simulation.playwright.config.ts",
+    "meta-review:rehearsal": "node scripts/generate-meta-review-rehearsal.mjs",
     "db:validate": "node scripts/validate-migrations.mjs",
     "db:test": "supabase test db",
     "db:integration": "node scripts/run-disposable-integration.mjs",

@@ -11,6 +11,10 @@ const ciWorkflow = readFileSync(
   resolve(process.cwd(), ".github/workflows/ci.yml"),
   "utf8",
 );
+const rehearsalWorkflow = readFileSync(
+  resolve(process.cwd(), ".github/workflows/meta-review-rehearsal.yml"),
+  "utf8",
+);
 const wrangler = readFileSync(
   resolve(process.cwd(), "apps/worker/wrangler.toml"),
   "utf8",
@@ -90,13 +94,42 @@ describe("production deployment safety", () => {
   });
 
   it("pins executable actions to immutable commit SHAs", () => {
-    const actionReferences = [workflow, ciWorkflow].flatMap((contents) =>
-      [...contents.matchAll(/uses:\s+([^\s#]+)/g)].map((match) => match[1]),
+    const actionReferences = [workflow, ciWorkflow, rehearsalWorkflow].flatMap(
+      (contents) =>
+        [...contents.matchAll(/uses:\s+([^\s#]+)/g)].map((match) => match[1]),
     );
     expect(actionReferences.length).toBeGreaterThan(0);
     for (const reference of actionReferences) {
       expect(reference).toMatch(/@[a-f0-9]{40}$/);
     }
+  });
+
+  it("keeps the Meta rehearsal manual, secret-free and non-deploying", () => {
+    expect(rehearsalWorkflow).toContain("workflow_dispatch:");
+    expect(rehearsalWorkflow).not.toMatch(
+      /^\s{2}(push|pull_request|schedule):/m,
+    );
+    expect(rehearsalWorkflow).not.toMatch(/\bsecrets:/i);
+    expect(rehearsalWorkflow).not.toMatch(/^\s+environment:/m);
+    expect(rehearsalWorkflow).not.toMatch(
+      /wrangler\s+(?:deploy|versions|secret)|pages\s+deploy/i,
+    );
+    expect(rehearsalWorkflow).toContain("corepack pnpm exec supabase start");
+    expect(rehearsalWorkflow).toContain("corepack pnpm db:test");
+    expect(rehearsalWorkflow).toContain("corepack pnpm db:integration");
+    expect(rehearsalWorkflow).toContain("corepack pnpm meta-review:rehearsal");
+  });
+
+  it("bootstraps branch-head rehearsal artifacts without production authority", () => {
+    expect(ciWorkflow).toContain("meta-review-rehearsal:");
+    expect(ciWorkflow).toContain(
+      "github.head_ref == 'feat/meta-review-simulation'",
+    );
+    expect(ciWorkflow).toContain(
+      "ref: ${{ github.event.pull_request.head.sha }}",
+    );
+    expect(ciWorkflow).toContain("corepack pnpm meta-review:rehearsal");
+    expect(ciWorkflow).not.toMatch(/wrangler\s+deploy|pages\s+deploy/i);
   });
 
   it("keeps real publishing disabled and queue recovery bounded", () => {

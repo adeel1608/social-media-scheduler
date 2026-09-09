@@ -34,6 +34,8 @@ export interface ConnectedAccountSummary {
   metadata: {
     displayName?: string;
     accountType?: string;
+    profilePictureUrl?: string;
+    providerAccountLabel?: string;
   };
   disconnect_cleanup?: {
     operationId: string;
@@ -414,13 +416,34 @@ export function AccountsPage() {
                       account.review_testing_authorized === true;
                     return (
                       <section className="connected-account" key={account.id}>
-                        <h2>
-                          {account.metadata.displayName ??
-                            (account.username
-                              ? `@${account.username.replace(/^@/, "")}`
-                              : "Connected account")}
-                        </h2>
+                        <div className="connected-account-identity">
+                          {account.metadata.profilePictureUrl && (
+                            <img
+                              src={account.metadata.profilePictureUrl}
+                              alt="Synthetic Instagram profile"
+                              referrerPolicy="no-referrer"
+                            />
+                          )}
+                          <div>
+                            <h2>
+                              {account.metadata.displayName ??
+                                (account.username
+                                  ? `@${account.username.replace(/^@/, "")}`
+                                  : "Connected account")}
+                            </h2>
+                            {account.username &&
+                              account.metadata.displayName && (
+                                <p>@{account.username.replace(/^@/, "")}</p>
+                              )}
+                          </div>
+                        </div>
                         <p>{account.metadata.accountType ?? provider.type}</p>
+                        {account.metadata.providerAccountLabel && (
+                          <p className="muted">
+                            Synthetic provider fixture:{" "}
+                            {account.metadata.providerAccountLabel}
+                          </p>
+                        )}
                         <div className="account-status-list">
                           <span
                             className={connected ? "positive" : "pending-text"}

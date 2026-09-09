@@ -11,13 +11,22 @@ import { useAuth } from "../context/AuthContext";
 const repositoryUrl = "https://github.com/adeel1608/social-media-scheduler";
 
 export function LoginPage() {
-  const { sendMagicLink, signInMetaReviewer, session, demoMode, accessRole } =
-    useAuth();
+  const {
+    sendMagicLink,
+    signInMetaReviewer,
+    session,
+    demoMode,
+    accessRole,
+    reviewerLoginEnabled,
+    turnstileSiteKeyOverride,
+    turnstileLoader,
+  } = useAuth();
   const reviewRequested =
     new URLSearchParams(
       typeof window === "undefined" ? "" : window.location.search,
     ).get("review") === "meta";
-  const reviewEnabled = import.meta.env.VITE_META_REVIEW_MODE === "true";
+  const reviewEnabled =
+    reviewerLoginEnabled ?? import.meta.env.VITE_META_REVIEW_MODE === "true";
   const reviewerLogin = reviewRequested && reviewEnabled;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -27,7 +36,9 @@ export function LoginPage() {
   const [captchaToken, setCaptchaToken] = useState("");
   const turnstileReference = useRef<TurnstileWidgetHandle>(null);
   const turnstileSiteKey =
-    import.meta.env.VITE_TURNSTILE_SITE_KEY?.trim() ?? "";
+    turnstileSiteKeyOverride ??
+    import.meta.env.VITE_TURNSTILE_SITE_KEY?.trim() ??
+    "";
   const updateCaptchaToken = useCallback((token: string) => {
     setCaptchaToken(token);
   }, []);
@@ -166,6 +177,7 @@ export function LoginPage() {
               onTokenChange={updateCaptchaToken}
               action={reviewerLogin ? "meta_reviewer_login" : "owner_login"}
               purpose={reviewerLogin ? "reviewer" : "owner"}
+              {...(turnstileLoader ? { loadApi: turnstileLoader } : {})}
             />
             <button
               className="primary-button full"
