@@ -85,6 +85,7 @@ function approvalStatus(account: ConnectedAccountSummary): string {
 function removeCallbackNotification(): {
   connected: Platform | null;
   pending: Platform | null;
+  failed: Platform | null;
 } {
   const url = new URL(window.location.href);
   const connectedValue = url.searchParams.get("connected");
@@ -100,6 +101,13 @@ function removeCallbackNotification(): {
   const pending = providerDetails.some((item) => item.platform === pendingValue)
     ? (pendingValue as Platform)
     : null;
+  const failedValue =
+    url.searchParams.get("oauth") === "error"
+      ? url.searchParams.get("platform")
+      : null;
+  const failed = providerDetails.some((item) => item.platform === failedValue)
+    ? (failedValue as Platform)
+    : null;
   if (
     url.searchParams.has("connected") ||
     url.searchParams.has("oauth") ||
@@ -113,7 +121,7 @@ function removeCallbackNotification(): {
       `${url.pathname}${url.search}${url.hash}`,
     );
   }
-  return { connected, pending };
+  return { connected, pending, failed };
 }
 
 export function AccountsPage() {
@@ -138,7 +146,10 @@ export function AccountsPage() {
   );
 
   const refreshAccounts = useCallback(
-    async (callbackPlatform?: Platform | null) => {
+    async (
+      callbackPlatform?: Platform | null,
+      failedPlatform?: Platform | null,
+    ) => {
       if (!session) {
         setLoading(false);
         setError("Your authenticated session is required to load accounts.");
@@ -162,6 +173,11 @@ export function AccountsPage() {
             confirmed
               ? `${providerLabel(callbackPlatform)} connection confirmed by the server.`
               : `${providerLabel(callbackPlatform)} returned to Postline, but the server does not report a connected account.`,
+          );
+        }
+        if (failedPlatform) {
+          setError(
+            `${providerLabel(failedPlatform)} could not be connected safely. Start a fresh connection attempt.`,
           );
         }
       } catch (reason) {
@@ -194,7 +210,7 @@ export function AccountsPage() {
       }
       return;
     }
-    void refreshAccounts(callback.connected);
+    void refreshAccounts(callback.connected, callback.failed);
   }, [authenticationLoading, demoMode, refreshAccounts, session]);
 
   async function connect(platform: Platform) {

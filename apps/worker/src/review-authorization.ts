@@ -6,6 +6,7 @@ import { metaReviewerConfiguration, type Env } from "./env";
 export class ReviewerAuthorizationError extends Error {
   constructor() {
     super("Reviewer authorization is unavailable or revoked.");
+    this.name = "ReviewerAuthorizationError";
   }
 }
 

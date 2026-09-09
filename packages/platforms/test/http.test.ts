@@ -128,13 +128,32 @@ describe("platform error sanitization", () => {
         { operation: "read" },
         5,
       ),
-    ).rejects.toEqual({
+    ).rejects.toMatchObject({
       name: "NetworkError",
       code: "network_error",
       message: "Network request failed",
       retryable: true,
       ambiguous: false,
     });
+  });
+
+  it("throws Error instances so runtime error boundaries can fail safely", async () => {
+    for (const fetcher of [
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response("{}", { status: 400 })),
+      vi.fn<typeof fetch>().mockRejectedValue(new Error("network failure")),
+    ]) {
+      let failure: unknown;
+      try {
+        await jsonRequest(fetcher, "https://provider.example/profile", {
+          operation: "read",
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+    }
   });
 
   it.each([

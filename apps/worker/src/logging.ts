@@ -3,6 +3,7 @@ import { configurationKeys, type Env } from "./env";
 export type WorkerErrorCode =
   | "configuration_incomplete"
   | "request_failed"
+  | "oauth_completion_failed"
   | "queue_dispatch_failed"
   | "queue_job_failed"
   | "queue_job_retrying"
@@ -23,6 +24,7 @@ interface WorkerErrorContext {
   messageId?: string;
   attempt?: number;
   provider?: string;
+  providerStatus?: number;
   state?: string;
   classification?: string;
   missingKeys?: ReadonlyArray<keyof Env>;
@@ -59,6 +61,14 @@ export function formatWorkerError(
   }
   if (context.provider && SAFE_IDENTIFIER.test(context.provider)) {
     record.provider = context.provider;
+  }
+  if (
+    context.providerStatus !== undefined &&
+    Number.isSafeInteger(context.providerStatus) &&
+    context.providerStatus >= 400 &&
+    context.providerStatus <= 599
+  ) {
+    record.providerStatus = context.providerStatus;
   }
   if (context.state && SAFE_IDENTIFIER.test(context.state)) {
     record.state = context.state;

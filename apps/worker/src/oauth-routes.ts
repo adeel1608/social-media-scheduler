@@ -15,7 +15,7 @@ import { html } from "hono/html";
 import { adapterFor, redirectUriFor } from "./adapters";
 import type { Variables } from "./auth";
 import { authenticateWorkspaceRequest } from "./auth";
-import { ownerDatabase, SupabaseRest } from "./database";
+import { DatabaseRequestError, ownerDatabase, SupabaseRest } from "./database";
 import { encryptionKeyResolver } from "./encryption";
 import type { Env } from "./env";
 import { metaReviewerConfiguration } from "./env";
@@ -33,6 +33,7 @@ import {
   type OAuthBindingRecord,
   type OAuthCompletionRecord,
 } from "./oauth-binding";
+import { logWorkerError } from "./logging";
 
 const oauth = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -49,6 +50,43 @@ function isPlatform(value: string): value is Platform {
 type OAuthContext = Context<{ Bindings: Env; Variables: Variables }>;
 
 const browserSecretPattern = /^[A-Za-z0-9_-]{32,128}$/;
+
+type OAuthCompletionPhase =
+  | "authorization"
+  | "token_exchange"
+  | "profile_read"
+  | "credential_encryption"
+  | "account_persistence";
+
+function oauthFailureClassification(error: unknown): string {
+  if (error instanceof DatabaseRequestError) return "database";
+  if (error instanceof Error) {
+    if (error.name === "PlatformHttpError") return "provider_http";
+    if (error.name === "NetworkError") return "provider_network";
+    if (error.name === "ReviewerAuthorizationError") return "authorization";
+  }
+  return "internal";
+}
+
+function oauthFailureProviderStatus(error: unknown): number | undefined {
+  if (!(error instanceof Error) || error.name !== "PlatformHttpError")
+    return undefined;
+  const status = (error as Error & { status?: unknown }).status;
+  return typeof status === "number" &&
+    Number.isSafeInteger(status) &&
+    status >= 400 &&
+    status <= 599
+    ? status
+    : undefined;
+}
+
+function oauthFailureRedirect(c: OAuthContext, platform: Platform): Response {
+  clearOAuthCookies(c, platform);
+  return c.redirect(
+    `${c.env.APP_URL}/accounts?oauth=error&platform=${platform}`,
+    303,
+  );
+}
 
 function clearOAuthCookies(c: OAuthContext, platform: Platform): void {
   for (const name of [
@@ -417,107 +455,129 @@ oauth.post("/:platform/complete", bodyLimit({ maxSize: 20_000 }), async (c) => {
     return c.json({ error: "oauth_completion_not_authorized" }, 403);
   }
   const record = consumed[0]!;
-  clearOAuthCookies(c, platform);
   if (
     record.owner_id !== authentication.user.id ||
     record.initiating_email !== currentEmail ||
     record.auth_session_id !== currentSession.id ||
     record.redirect_uri !== redirectUriFor(platform, c.env) ||
     !oauthStateAuthorizationValid(c.env, platform, record)
-  )
+  ) {
+    clearOAuthCookies(c, platform);
     return c.json({ error: "oauth_completion_not_authorized" }, 403);
-  if (record.authorization_context === "meta_review")
-    await requireReviewerAuthorization(
-      c.env,
-      record.owner_id,
-      record.authorization_generation ?? undefined,
-    );
+  }
+  let phase: OAuthCompletionPhase = "authorization";
+  try {
+    if (record.authorization_context === "meta_review")
+      await requireReviewerAuthorization(
+        c.env,
+        record.owner_id,
+        record.authorization_generation ?? undefined,
+      );
 
-  const [code, verifier] = await Promise.all([
-    decryptSecret(
-      {
-        ciphertext: record.pending_authorization_code,
-        nonce: record.pending_authorization_code_nonce,
-        algorithm: "AES-GCM",
-        keyVersion: record.pending_authorization_code_key_version,
-      },
-      encryptionKeyResolver(c.env),
-    ),
-    decryptSecret(
-      {
-        ciphertext: record.encrypted_pkce_verifier,
-        nonce: record.pkce_nonce,
-        algorithm: "AES-GCM",
-        keyVersion: record.encryption_key_version,
-      },
-      encryptionKeyResolver(c.env),
-    ),
-  ]);
-  const adapter = adapterFor(platform, c.env);
-  if (record.authorization_context === "meta_review")
-    await requireReviewerAuthorization(
-      c.env,
-      record.owner_id,
-      record.authorization_generation ?? undefined,
+    const [code, verifier] = await Promise.all([
+      decryptSecret(
+        {
+          ciphertext: record.pending_authorization_code,
+          nonce: record.pending_authorization_code_nonce,
+          algorithm: "AES-GCM",
+          keyVersion: record.pending_authorization_code_key_version,
+        },
+        encryptionKeyResolver(c.env),
+      ),
+      decryptSecret(
+        {
+          ciphertext: record.encrypted_pkce_verifier,
+          nonce: record.pkce_nonce,
+          algorithm: "AES-GCM",
+          keyVersion: record.encryption_key_version,
+        },
+        encryptionKeyResolver(c.env),
+      ),
+    ]);
+    const adapter = adapterFor(platform, c.env);
+    if (record.authorization_context === "meta_review")
+      await requireReviewerAuthorization(
+        c.env,
+        record.owner_id,
+        record.authorization_generation ?? undefined,
+      );
+    phase = "token_exchange";
+    const tokens = await adapter.exchangeAuthorizationCode(
+      code,
+      record.redirect_uri,
+      verifier,
     );
-  const tokens = await adapter.exchangeAuthorizationCode(
-    code,
-    record.redirect_uri,
-    verifier,
-  );
-  if (record.authorization_context === "meta_review")
-    await requireReviewerAuthorization(
-      c.env,
-      record.owner_id,
-      record.authorization_generation ?? undefined,
+    phase = "authorization";
+    if (record.authorization_context === "meta_review")
+      await requireReviewerAuthorization(
+        c.env,
+        record.owner_id,
+        record.authorization_generation ?? undefined,
+      );
+    phase = "profile_read";
+    const profile = await adapter.getAccountProfile(tokens.accessToken);
+    phase = "credential_encryption";
+    const access = await encryptSecret(
+      tokens.accessToken,
+      c.env.TOKEN_ENCRYPTION_KEY,
+      c.env.TOKEN_ENCRYPTION_KEY_VERSION,
     );
-  const profile = await adapter.getAccountProfile(tokens.accessToken);
-  const access = await encryptSecret(
-    tokens.accessToken,
-    c.env.TOKEN_ENCRYPTION_KEY,
-    c.env.TOKEN_ENCRYPTION_KEY_VERSION,
-  );
-  const refresh = tokens.refreshToken
-    ? await encryptSecret(
-        tokens.refreshToken,
-        c.env.TOKEN_ENCRYPTION_KEY,
-        c.env.TOKEN_ENCRYPTION_KEY_VERSION,
-      )
-    : null;
-  if (record.authorization_context === "meta_review")
-    await requireReviewerAuthorization(
-      c.env,
-      record.owner_id,
-      record.authorization_generation ?? undefined,
-    );
-  await db.rpc("persist_bound_oauth_account", {
-    p_state_id: record.id,
-    p_browser_binding_hash: bindingHash,
-    ...oauthAuthorizationArgs(c.env, platform),
-    p_account: {
-      remote_account_id: profile.id,
-      username: profile.username,
-      encrypted_access_token: access.ciphertext,
-      access_token_nonce: access.nonce,
-      encrypted_refresh_token: refresh?.ciphertext,
-      refresh_token_nonce: refresh?.nonce,
-      encryption_key_version: access.keyVersion,
-      scopes: tokens.scopes,
-      token_expires_at: tokens.expiresAt,
-      connection_status: "connected",
-      approval_state: adapter.getCapabilities().supportsDirectPublicPublishing
-        ? "approved"
-        : "pending",
-      metadata: {
-        displayName: profile.displayName,
-        accountType: profile.accountType,
-        ...(typeof tokens.raw.refreshTokenExpiresAt === "string"
-          ? { refreshTokenExpiresAt: tokens.raw.refreshTokenExpiresAt }
-          : {}),
+    const refresh = tokens.refreshToken
+      ? await encryptSecret(
+          tokens.refreshToken,
+          c.env.TOKEN_ENCRYPTION_KEY,
+          c.env.TOKEN_ENCRYPTION_KEY_VERSION,
+        )
+      : null;
+    phase = "authorization";
+    if (record.authorization_context === "meta_review")
+      await requireReviewerAuthorization(
+        c.env,
+        record.owner_id,
+        record.authorization_generation ?? undefined,
+      );
+    phase = "account_persistence";
+    await db.rpc("persist_bound_oauth_account", {
+      p_state_id: record.id,
+      p_browser_binding_hash: bindingHash,
+      ...oauthAuthorizationArgs(c.env, platform),
+      p_account: {
+        remote_account_id: profile.id,
+        username: profile.username,
+        encrypted_access_token: access.ciphertext,
+        access_token_nonce: access.nonce,
+        encrypted_refresh_token: refresh?.ciphertext,
+        refresh_token_nonce: refresh?.nonce,
+        encryption_key_version: access.keyVersion,
+        scopes: tokens.scopes,
+        token_expires_at: tokens.expiresAt,
+        connection_status: "connected",
+        approval_state: adapter.getCapabilities().supportsDirectPublicPublishing
+          ? "approved"
+          : "pending",
+        metadata: {
+          displayName: profile.displayName,
+          accountType: profile.accountType,
+          ...(typeof tokens.raw.refreshTokenExpiresAt === "string"
+            ? { refreshTokenExpiresAt: tokens.raw.refreshTokenExpiresAt }
+            : {}),
+        },
       },
-    },
-  });
-  return c.redirect(`${c.env.APP_URL}/accounts?connected=${platform}`, 303);
+    });
+    clearOAuthCookies(c, platform);
+    return c.redirect(`${c.env.APP_URL}/accounts?connected=${platform}`, 303);
+  } catch (error) {
+    const requestId = c.req.header("CF-Ray");
+    const providerStatus = oauthFailureProviderStatus(error);
+    logWorkerError("oauth_completion_failed", {
+      ...(requestId ? { requestId } : {}),
+      provider: platform,
+      ...(providerStatus !== undefined ? { providerStatus } : {}),
+      state: phase,
+      classification: oauthFailureClassification(error),
+    });
+    return oauthFailureRedirect(c, platform);
+  }
 });
 
 export default oauth;

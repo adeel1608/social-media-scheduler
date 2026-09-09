@@ -156,6 +156,12 @@ interface CompletionFetchOptions {
   consume?: boolean;
   reviewerAdmin?: Record<string, unknown> | null;
   reviewerGeneration?: string | null;
+  profileStatus?: number;
+  profileBody?: Record<string, unknown>;
+  profileNetworkFailure?: boolean;
+  tokenExchangeStatus?: number;
+  tokenExchangeNetworkFailure?: boolean;
+  persistenceStatus?: number;
 }
 
 function completionFetch(
@@ -227,23 +233,38 @@ function completionFetch(
         ]);
       }
       if (url.endsWith("/rest/v1/rpc/persist_bound_oauth_account"))
-        return Response.json({ id: "account-id" });
-      if (url === "https://api.instagram.com/oauth/access_token")
-        return Response.json({
-          access_token: "synthetic-short-token",
-          user_id: 123,
-        });
+        return Response.json(
+          { id: "account-id" },
+          { status: options.persistenceStatus ?? 200 },
+        );
+      if (url === "https://api.instagram.com/oauth/access_token") {
+        if (options.tokenExchangeNetworkFailure)
+          throw new Error("synthetic token exchange network failure");
+        return Response.json(
+          {
+            access_token: "synthetic-short-token",
+            user_id: 123,
+          },
+          { status: options.tokenExchangeStatus ?? 200 },
+        );
+      }
       if (url.startsWith("https://graph.instagram.com/access_token"))
         return Response.json({
           access_token: "synthetic-long-token",
           expires_in: 3600,
         });
-      if (url.startsWith("https://graph.instagram.com/v23.0/me"))
-        return Response.json({
-          id: "remote-123",
-          username: "review-fixture",
-          account_type: "BUSINESS",
-        });
+      if (url.startsWith("https://graph.instagram.com/v23.0/me")) {
+        if (options.profileNetworkFailure)
+          throw new Error("synthetic profile network failure");
+        return Response.json(
+          options.profileBody ?? {
+            user_id: "12345678901234567",
+            username: "review-fixture",
+            account_type: "BUSINESS",
+          },
+          { status: options.profileStatus ?? 200 },
+        );
+      }
       throw new Error(`unexpected completion request ${new URL(url).pathname}`);
     },
   );
@@ -304,6 +325,198 @@ describe("OAuth callback escrow and authenticated completion", () => {
       calls.filter((url) => url.endsWith("/persist_bound_oauth_account")),
     ).toHaveLength(1);
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    const profileRequest = new URL(
+      calls.find((url) =>
+        url.startsWith("https://graph.instagram.com/v23.0/me"),
+      )!,
+    );
+    expect(profileRequest.searchParams.get("fields")?.split(",")).toContain(
+      "user_id",
+    );
+  });
+
+  it("completes the reviewer form flow with current Instagram profile semantics", async () => {
+    const generation = "77777777-7777-4777-8777-777777777777";
+    const reviewerId = "88888888-8888-4888-8888-888888888888";
+    const reviewerEmail = "reviewer@postline.dev";
+    const fixture = await record({
+      owner_id: reviewerId,
+      initiating_email: reviewerEmail,
+      authorization_context: "meta_review",
+      authorization_generation: generation,
+    });
+    const reviewEnvironment = {
+      ...environment,
+      META_REVIEW_MODE: "true",
+      META_REVIEWER_USER_ID: reviewerId,
+      META_REVIEWER_EMAIL: reviewerEmail,
+    } as Env;
+    const { calls, fetcher } = completionFetch(fixture, {
+      userId: reviewerId,
+      email: reviewerEmail,
+      reviewerGeneration: generation,
+    });
+    const token = jwt(sessionId, undefined, true);
+    const request = new Request(
+      "https://worker.example.test/api/oauth/instagram/complete",
+      {
+        method: "POST",
+        headers: {
+          Origin: reviewEnvironment.APP_URL,
+          "Content-Type": "application/x-www-form-urlencoded",
+          Cookie: `${oauthCookieName("instagram")}=${binding}; ${oauthCompletionCookieName("instagram")}=${completion}`,
+        },
+        body: new URLSearchParams({ session_token: token }),
+      },
+    );
+
+    const response = await app.fetch(request, reviewEnvironment);
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "https://postline.example.test/accounts?connected=instagram",
+    );
+    expect(
+      calls.filter(
+        (url) => url === "https://api.instagram.com/oauth/access_token",
+      ),
+    ).toHaveLength(1);
+    const persistenceCall = fetcher.mock.calls.find(([input]) =>
+      String(input).endsWith("/persist_bound_oauth_account"),
+    );
+    const persistenceBody = JSON.parse(
+      String((persistenceCall?.[1] as RequestInit | undefined)?.body),
+    ) as { p_account?: Record<string, unknown> };
+    expect(persistenceBody.p_account).toMatchObject({
+      remote_account_id: "12345678901234567",
+      username: "review-fixture",
+    });
+    expect(persistenceBody.p_account).not.toHaveProperty(
+      "authorization_context",
+    );
+  });
+
+  it.each([
+    [
+      "profile HTTP rejection",
+      { profileStatus: 400 },
+      "profile_read",
+      "provider_http",
+      400,
+    ],
+    [
+      "profile network rejection",
+      { profileNetworkFailure: true },
+      "profile_read",
+      "provider_network",
+      undefined,
+    ],
+    [
+      "token exchange HTTP rejection",
+      { tokenExchangeStatus: 400 },
+      "token_exchange",
+      "provider_http",
+      400,
+    ],
+    [
+      "token exchange network rejection",
+      { tokenExchangeNetworkFailure: true },
+      "token_exchange",
+      "provider_network",
+      undefined,
+    ],
+    [
+      "malformed profile",
+      { profileBody: { id: "legacy-id", username: "review-fixture" } },
+      "profile_read",
+      "internal",
+      undefined,
+    ],
+    [
+      "database persistence rejection",
+      { persistenceStatus: 500 },
+      "account_persistence",
+      "database",
+      undefined,
+    ],
+    [
+      "conflicting account rejection",
+      { persistenceStatus: 409 },
+      "account_persistence",
+      "database",
+      undefined,
+    ],
+  ] as const)(
+    "turns %s into a sanitized browser redirect with no publication",
+    async (_name, options, phase, classification, providerStatus) => {
+      const fixture = await record();
+      const { calls } = completionFetch(fixture, options);
+      const log = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+
+      const response = await app.fetch(
+        completionRequest({ token: jwt() }),
+        environment,
+      );
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe(
+        "https://postline.example.test/accounts?oauth=error&platform=instagram",
+      );
+      expect(await response.text()).toBe("");
+      const logged = log.mock.calls.flat().join(" ");
+      expect(logged).toContain("oauth_completion_failed");
+      expect(logged).toContain(`"state":"${phase}"`);
+      expect(logged).toContain(`"classification":"${classification}"`);
+      if (providerStatus !== undefined)
+        expect(logged).toContain(`"providerStatus":${providerStatus}`);
+      else expect(logged).not.toContain("providerStatus");
+      expect(logged).not.toContain("synthetic-code");
+      expect(logged).not.toContain("synthetic-short-token");
+      expect(logged).not.toContain("synthetic-long-token");
+      expect(
+        calls.some((url) => {
+          const parsed = new URL(url);
+          return /\/(media|media_publish)$/.test(parsed.pathname);
+        }),
+      ).toBe(false);
+      if (
+        options.profileStatus ||
+        options.profileBody ||
+        options.profileNetworkFailure ||
+        options.tokenExchangeStatus ||
+        options.tokenExchangeNetworkFailure
+      ) {
+        expect(
+          calls.some((url) =>
+            url.endsWith("/rest/v1/rpc/persist_bound_oauth_account"),
+          ),
+        ).toBe(false);
+      }
+      log.mockRestore();
+    },
+  );
+
+  it("does not repeat provider exchange after a failed consumed completion", async () => {
+    const fixture = await record();
+    const { calls } = completionFetch(fixture, { profileStatus: 400 });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const first = await app.fetch(
+      completionRequest({ token: jwt() }),
+      environment,
+    );
+    const replay = await app.fetch(
+      completionRequest({ token: jwt() }),
+      environment,
+    );
+    expect(first.status).toBe(303);
+    expect(replay.status).toBe(403);
+    expect(
+      calls.filter(
+        (url) => url === "https://api.instagram.com/oauth/access_token",
+      ),
+    ).toHaveLength(1);
+    log.mockRestore();
   });
 
   it.each([
