@@ -16,6 +16,56 @@ const video = {
 };
 
 describe("official API adapters", () => {
+  it("reads the current Instagram Login profile identity field", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          user_id: "17841400000000000",
+          username: "review-fixture",
+          name: "Review Fixture",
+          account_type: "BUSINESS",
+          profile_picture_url: "https://cdn.example.test/profile.jpg",
+        }),
+      ),
+    );
+    const adapter = new InstagramAdapter(
+      { appId: "app", appSecret: "secret", reviewApproved: false },
+      fetcher,
+    );
+
+    await expect(adapter.getAccountProfile("synthetic-token")).resolves.toEqual(
+      {
+        id: "17841400000000000",
+        username: "review-fixture",
+        displayName: "Review Fixture",
+        accountType: "BUSINESS",
+        avatarUrl: "https://cdn.example.test/profile.jpg",
+      },
+    );
+    const requested = new URL(String(fetcher.mock.calls[0]?.[0]));
+    expect(requested.searchParams.get("fields")?.split(",")).toContain(
+      "user_id",
+    );
+    expect(requested.searchParams.get("fields")?.split(",")).not.toContain(
+      "id",
+    );
+  });
+
+  it("rejects malformed Instagram profile identity before persistence", async () => {
+    const adapter = new InstagramAdapter(
+      { appId: "app", appSecret: "secret", reviewApproved: false },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          Response.json({ id: "legacy-id", username: "review-fixture" }),
+        ),
+    );
+
+    await expect(adapter.getAccountProfile("synthetic-token")).rejects.toThrow(
+      "invalid account profile",
+    );
+  });
+
   it("keeps the temporary Meta review gate separate from approval", async () => {
     const blockedFetch = vi.fn<typeof fetch>();
     const blocked = new InstagramAdapter(

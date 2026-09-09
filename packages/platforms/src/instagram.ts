@@ -223,22 +223,55 @@ export class InstagramAdapter implements PlatformAdapter {
   async getAccountProfile(accessToken: string): Promise<AccountProfile> {
     const url = new URL(`https://graph.instagram.com/${this.graphVersion}/me`);
     url.search = new URLSearchParams({
-      fields: "id,username,name,account_type,profile_picture_url",
+      // Instagram Login exposes `id` as an app-scoped user identifier and
+      // `user_id` as the professional-account identifier used by Graph and
+      // webhook payloads. Request the documented minimum profile projection.
+      fields: "user_id,username",
       access_token: accessToken,
     }).toString();
-    const profile = await jsonRequest<Record<string, string>>(
+    const profile = await jsonRequest<Record<string, unknown>>(
       this.fetcher,
       url.toString(),
       { operation: "read" },
     );
+    const id =
+      typeof profile.user_id === "string" &&
+      /^[0-9]{1,256}$/.test(profile.user_id)
+        ? profile.user_id
+        : typeof profile.user_id === "number" &&
+            Number.isSafeInteger(profile.user_id) &&
+            profile.user_id > 0
+          ? String(profile.user_id)
+          : null;
+    const username =
+      typeof profile.username === "string" &&
+      profile.username.length > 0 &&
+      profile.username.length <= 256
+        ? profile.username
+        : null;
+    if (!id || !username)
+      throw new Error("Instagram returned an invalid account profile");
+    const displayName =
+      typeof profile.name === "string" && profile.name.length <= 256
+        ? profile.name
+        : undefined;
+    const accountType =
+      typeof profile.account_type === "string" &&
+      profile.account_type.length <= 64
+        ? profile.account_type
+        : undefined;
+    const avatarUrl =
+      typeof profile.profile_picture_url === "string" &&
+      profile.profile_picture_url.length <= 2048 &&
+      profile.profile_picture_url.startsWith("https://")
+        ? profile.profile_picture_url
+        : undefined;
     return {
-      id: profile.id!,
-      username: profile.username!,
-      ...(profile.name ? { displayName: profile.name } : {}),
-      ...(profile.profile_picture_url
-        ? { avatarUrl: profile.profile_picture_url }
-        : {}),
-      ...(profile.account_type ? { accountType: profile.account_type } : {}),
+      id,
+      username,
+      ...(displayName !== undefined ? { displayName } : {}),
+      ...(avatarUrl !== undefined ? { avatarUrl } : {}),
+      ...(accountType !== undefined ? { accountType } : {}),
     };
   }
 

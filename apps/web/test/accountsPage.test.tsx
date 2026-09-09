@@ -227,6 +227,24 @@ describe("authoritative Connected Accounts UI", () => {
     expect(window.location.search).toBe("");
   });
 
+  it("shows a sanitized recoverable error after a failed OAuth completion", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/accounts?oauth=error&platform=instagram",
+    );
+    mocks.apiRequest.mockResolvedValue({ data: [] });
+    render(<AccountsPage />);
+
+    expect(
+      await screen.findByText(
+        "Instagram could not be connected safely. Start a fresh connection attempt.",
+      ),
+    ).toBeTruthy();
+    expect(mocks.apiRequest).toHaveBeenCalledWith("/api/accounts", session);
+    expect(window.location.search).toBe("");
+  });
+
   it("does not let a callback query manufacture a connected account", async () => {
     window.history.replaceState({}, "", "/accounts?connected=tiktok");
     mocks.apiRequest.mockResolvedValue({ data: [] });

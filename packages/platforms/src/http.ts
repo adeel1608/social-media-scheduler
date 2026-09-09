@@ -8,6 +8,25 @@ export interface ProviderRequestInit extends RequestInit {
   operation: ProviderOperation;
 }
 
+/** Provider failures must be real Error instances. Framework error boundaries
+ * (including Hono's) intentionally do not handle arbitrary thrown values.
+ * Keep only already-redacted provider details on the error object.
+ */
+export class ProviderRequestError extends Error {
+  constructor(
+    name: "PlatformHttpError" | "NetworkError",
+    message: string,
+    readonly retryable: boolean,
+    readonly ambiguous: boolean,
+    readonly code?: string,
+    readonly status?: number,
+    readonly body?: unknown,
+  ) {
+    super(message);
+    this.name = name;
+  }
+}
+
 export function trustedUploadSessionUrl(
   platform: Platform,
   value: string,
@@ -87,25 +106,26 @@ export function providerHttpError(
   operation: ProviderOperation,
 ) {
   const ambiguous = operation === "publish" && status >= 500;
-  return {
-    name: "PlatformHttpError",
-    status,
-    body: redactSecrets(body),
-    message: `Platform request failed with HTTP ${status}`,
-    retryable: !ambiguous && (status === 429 || status >= 500),
+  return new ProviderRequestError(
+    "PlatformHttpError",
+    `Platform request failed with HTTP ${status}`,
+    !ambiguous && (status === 429 || status >= 500),
     ambiguous,
-  };
+    undefined,
+    status,
+    redactSecrets(body),
+  );
 }
 
 function providerNetworkError(operation: ProviderOperation) {
   const ambiguous = operation === "publish";
-  return {
-    name: "NetworkError",
-    code: "network_error",
-    message: "Network request failed",
-    retryable: !ambiguous,
+  return new ProviderRequestError(
+    "NetworkError",
+    "Network request failed",
+    !ambiguous,
     ambiguous,
-  };
+    "network_error",
+  );
 }
 
 export function genericNormalizeError(error: unknown): PlatformError {
