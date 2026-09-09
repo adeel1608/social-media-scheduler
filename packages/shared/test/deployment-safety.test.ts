@@ -99,11 +99,11 @@ describe("production deployment safety", () => {
     }
   });
 
-  it("keeps real publishing disabled and queue recovery bounded", () => {
+  it("keeps non-review publishing disabled during the controlled review window", () => {
     expect(variables).toMatchObject({
       LIVE_TEST_CONFIRM: "false",
       META_APP_REVIEW_APPROVED: "false",
-      META_REVIEW_MODE: "false",
+      META_REVIEW_MODE: "true",
       TIKTOK_CONTENT_POSTING_AUDITED: "false",
       YOUTUBE_API_AUDIT_APPROVED: "false",
     });
