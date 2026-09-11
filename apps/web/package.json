@@ -12,8 +12,8 @@
   },
   "dependencies": {
     "@scheduler/shared": "workspace:*",
-    "@supabase/supabase-js": "2.114.0",
-    "lucide-react": "1.39.0",
+    "@supabase/supabase-js": "2.116.0",
+    "lucide-react": "1.43.0",
     "luxon": "3.7.2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
