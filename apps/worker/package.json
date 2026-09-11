@@ -12,7 +12,7 @@
   "dependencies": {
     "@scheduler/platforms": "workspace:*",
     "@scheduler/shared": "workspace:*",
-    "hono": "4.13.5",
+    "hono": "4.13.7",
     "luxon": "3.7.2",
     "uploadthing": "7.7.4"
   },
